@@ -3,15 +3,13 @@ package mcp2221a
 import (
 	"fmt"
 	"testing"
-
-	usb "github.com/google/gousb"
 )
 
 func TestNewMCP2221A(t *testing.T) {
 
 	type TC struct {
-		vid usb.ID
-		pid usb.ID
+		vid uint16
+		pid uint16
 		err error
 	}
 
@@ -54,8 +52,8 @@ func TestNewMCP2221A(t *testing.T) {
 func TestClose(t *testing.T) {
 
 	type TC struct {
-		vid  usb.ID
-		pid  usb.ID
+		vid  uint16
+		pid  uint16
 		err1 error
 		err2 error
 	}
@@ -65,13 +63,13 @@ func TestClose(t *testing.T) {
 			vid:  VID,
 			pid:  PID,
 			err1: nil,
-			err2: fmt.Errorf("libusb device already closed"),
+			err2: fmt.Errorf("libusb context already closed"),
 		},
 		{
 			vid:  0,
 			pid:  0,
-			err1: fmt.Errorf("invalid receiver"),
-			err2: fmt.Errorf("invalid receiver"),
+			err1: fmt.Errorf("nil MCP2221A"),
+			err2: fmt.Errorf("nil MCP2221A"),
 		},
 	}
 
