@@ -287,7 +287,7 @@ func (mcp *MCP2221A) GPIOSet(pin int, val byte) error {
 
 // -- SRAM ---------------------------------------------------------- [start] --
 
-func (mcp *MCP2221A) SRAMSetGPIO(pin uint8, mode GPIOMode, dir GPIODir, val byte) error {
+func (mcp *MCP2221A) ConfigSetGPIO(pin uint8, mode GPIOMode, dir GPIODir, val byte) error {
 
 	if ok, err := mcp.isValid(); !ok {
 		return err
@@ -299,8 +299,8 @@ func (mcp *MCP2221A) SRAMSetGPIO(pin uint8, mode GPIOMode, dir GPIODir, val byte
 
 	cmd := cmdBuf()
 
-	if cur, err := mcp.SRAMGet(22, 25); nil != err {
-		return fmt.Errorf("SRAMGet(): %v", err)
+	if cur, err := mcp.ConfigGet(22, 25); nil != err {
+		return fmt.Errorf("ConfigGet(): %v", err)
 	} else {
 		// copy the current GPIO settings because they will -all- be set with the
 		// command request
@@ -321,7 +321,7 @@ func (mcp *MCP2221A) SRAMSetGPIO(pin uint8, mode GPIOMode, dir GPIODir, val byte
 	return nil
 }
 
-func (mcp *MCP2221A) SRAMGet(start uint8, stop uint8) ([]byte, error) {
+func (mcp *MCP2221A) ConfigGet(start uint8, stop uint8) ([]byte, error) {
 
 	if ok, err := mcp.isValid(); !ok {
 		return nil, err

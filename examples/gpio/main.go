@@ -15,13 +15,12 @@ func main() {
 	defer m.Close()
 
 	// set pin 0 to GPIO output mode
-	if err := m.SRAMSetGPIO(0, mcp.ModeGPIO, mcp.DirOut, 0); nil != err {
-		log.Fatalf("SRAMSetGPIO(): %v", err)
+	if err := m.ConfigSetGPIO(0, mcp.ModeGPIO, mcp.DirOut, 0); nil != err {
+		log.Fatalf("ConfigSetGPIO(): %v", err)
 	}
 
 	var val byte = 1
 	for {
-		log.Printf("setting %d", val)
 		if err := m.GPIOSet(0, val); nil != err {
 			log.Fatalf("GPIOSet(): %v", err)
 		}
