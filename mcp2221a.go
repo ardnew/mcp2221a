@@ -60,7 +60,7 @@ func AttachedDevices(vid uint16, pid uint16) []usb.DeviceInfo {
 	return info
 }
 
-func NewMCP2221A(idx uint8, vid uint16, pid uint16) (*MCP2221A, error) {
+func New(idx uint8, vid uint16, pid uint16) (*MCP2221A, error) {
 
 	mcp := &MCP2221A{
 		Device: nil,
@@ -81,7 +81,7 @@ func NewMCP2221A(idx uint8, vid uint16, pid uint16) (*MCP2221A, error) {
 	return mcp, nil
 }
 
-func (mcp *MCP2221A) isValid() (bool, error) {
+func (mcp *MCP2221A) valid() (bool, error) {
 
 	if nil == mcp {
 		return false, fmt.Errorf("nil MCP2221A")
@@ -96,7 +96,7 @@ func (mcp *MCP2221A) isValid() (bool, error) {
 
 func (mcp *MCP2221A) Close() error {
 
-	if ok, err := mcp.isValid(); !ok {
+	if ok, err := mcp.valid(); !ok {
 		return err
 	}
 
@@ -106,9 +106,9 @@ func (mcp *MCP2221A) Close() error {
 	return nil
 }
 
-func (mcp *MCP2221A) SendCmd(cmd byte, data []byte) ([]byte, error) {
+func (mcp *MCP2221A) Send(cmd byte, data []byte) ([]byte, error) {
 
-	if ok, err := mcp.isValid(); !ok {
+	if ok, err := mcp.valid(); !ok {
 		return nil, err
 	}
 
@@ -131,7 +131,7 @@ func (mcp *MCP2221A) SendCmd(cmd byte, data []byte) ([]byte, error) {
 
 func (mcp *MCP2221A) Reset() error {
 
-	if ok, err := mcp.isValid(); !ok {
+	if ok, err := mcp.valid(); !ok {
 		return err
 	}
 
@@ -140,8 +140,8 @@ func (mcp *MCP2221A) Reset() error {
 	cmd[2] = 0xCD
 	cmd[3] = 0xEF
 
-	if _, err := mcp.SendCmd(CmdReset, cmd); nil != err {
-		return fmt.Errorf("SendCmd(): %v", err)
+	if _, err := mcp.Send(CmdReset, cmd); nil != err {
+		return fmt.Errorf("Send(): %v", err)
 	}
 
 	return nil
@@ -188,15 +188,15 @@ var (
 
 func (mcp *MCP2221A) Status() (*Status, error) {
 
-	if ok, err := mcp.isValid(); !ok {
+	if ok, err := mcp.valid(); !ok {
 		return nil, err
 	}
 
 	cmd := cmdBuf()
 
-	if rsp, err := mcp.SendCmd(CmdStatus, cmd); nil != err {
+	if rsp, err := mcp.Send(CmdStatus, cmd); nil != err {
 
-		return nil, fmt.Errorf("SendCmd(): %v", err)
+		return nil, fmt.Errorf("Send(): %v", err)
 
 	} else {
 
@@ -258,38 +258,9 @@ var (
 	GPIODirValue = map[GPIODir]byte{false: 0, true: 1}
 )
 
-func (mcp *MCP2221A) GPIOSet(pin int, val byte) error {
+func (mcp *MCP2221A) GPIOConfig(pin uint8, mode GPIOMode, dir GPIODir, val byte) error {
 
-	if ok, err := mcp.isValid(); !ok {
-		return err
-	}
-
-	if pin < 0 || pin >= GPIOPinCount {
-		return fmt.Errorf("invalid GPIO pin: %d", pin)
-	}
-
-	cmd := cmdBuf()
-
-	i := 2 + 4*pin
-	cmd[i+0] = 0xFF
-	cmd[i+1] = val
-	cmd[i+2] = 0xFF
-	cmd[i+3] = 0
-
-	if _, err := mcp.SendCmd(CmdGPIOSet, cmd); nil != err {
-		return fmt.Errorf("SendCmd(): %v", err)
-	}
-
-	return nil
-}
-
-// -- GPIO ------------------------------------------------------------ [end] --
-
-// -- SRAM ---------------------------------------------------------- [start] --
-
-func (mcp *MCP2221A) ConfigSetGPIO(pin uint8, mode GPIOMode, dir GPIODir, val byte) error {
-
-	if ok, err := mcp.isValid(); !ok {
+	if ok, err := mcp.valid(); !ok {
 		return err
 	}
 
@@ -314,16 +285,45 @@ func (mcp *MCP2221A) ConfigSetGPIO(pin uint8, mode GPIOMode, dir GPIODir, val by
 	// and then update our selected pin as desired
 	cmd[8+pin] = (val << 4) | (GPIODirValue[dir] << 3) | byte(mode)
 
-	if _, err := mcp.SendCmd(CmdSRAMSet, cmd); nil != err {
-		return fmt.Errorf("SendCmd(): %v", err)
+	if _, err := mcp.Send(CmdSRAMSet, cmd); nil != err {
+		return fmt.Errorf("Send(): %v", err)
 	}
 
 	return nil
 }
 
+func (mcp *MCP2221A) GPIOSet(pin int, val byte) error {
+
+	if ok, err := mcp.valid(); !ok {
+		return err
+	}
+
+	if pin < 0 || pin >= GPIOPinCount {
+		return fmt.Errorf("invalid GPIO pin: %d", pin)
+	}
+
+	cmd := cmdBuf()
+
+	i := 2 + 4*pin
+	cmd[i+0] = 0xFF
+	cmd[i+1] = val
+	cmd[i+2] = 0xFF
+	cmd[i+3] = 0
+
+	if _, err := mcp.Send(CmdGPIOSet, cmd); nil != err {
+		return fmt.Errorf("Send(): %v", err)
+	}
+
+	return nil
+}
+
+// -- GPIO ------------------------------------------------------------ [end] --
+
+// -- SRAM ---------------------------------------------------------- [start] --
+
 func (mcp *MCP2221A) ConfigGet(start uint8, stop uint8) ([]byte, error) {
 
-	if ok, err := mcp.isValid(); !ok {
+	if ok, err := mcp.valid(); !ok {
 		return nil, err
 	}
 
@@ -332,8 +332,8 @@ func (mcp *MCP2221A) ConfigGet(start uint8, stop uint8) ([]byte, error) {
 	}
 
 	cmd := cmdBuf()
-	if rsp, err := mcp.SendCmd(CmdSRAMGet, cmd); nil != err {
-		return nil, fmt.Errorf("SendCmd(): %v", err)
+	if rsp, err := mcp.Send(CmdSRAMGet, cmd); nil != err {
+		return nil, fmt.Errorf("Send(): %v", err)
 	} else {
 		return rsp[start : stop+1], nil
 	}
