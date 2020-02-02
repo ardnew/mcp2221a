@@ -1,54 +1,114 @@
+// Package mcp2221a provides a high-level interface to the Microchip MCP2221A
+// USB to GPIO/I²C/UART protocol converter. The physical GPIO and I²C modules
+// are implemented as USB HID-class devices, while the UART module is USB CDC.
+// This package only supports the USB HID-class devices (GPIO/I²C) and all of
+// the functions associated with them (ADC, DAC, SRAM, and flash memory).
+//
+// Datasheet: http://ww1.microchip.com/downloads/en/devicedoc/20005565b.pdf
+//
+// USB HID support provided by: https://github.com/karalabe/hid
 package mcp2221a
 
 import (
 	"fmt"
+	"log"
+	"math"
+	"time"
 
 	usb "github.com/karalabe/hid"
 )
 
-// factory default identification and configuration of USB descriptors
+// VID and PID are the official vendor and product identifiers assigned by the
+// USB-IF.
 const (
-	VID = 0x04D8 // Microchip Technology Inc.
-	PID = 0x00DD
-
-	PktSz = 64 // size of command/response buffers (bytes)
+	VID = 0x04D8 // 16-bit vendor ID for Microchip Technology Inc.
+	PID = 0x00DD // 16-bit product ID for the Microchip MCP2221A.
 )
 
-func cmdBuf() []byte { return make([]byte, PktSz) }
-func rspBuf() []byte { return make([]byte, PktSz) }
+// MsgSz is the size (in bytes) of all command and response messages.
+const MsgSz = 64
 
+// ClkHz is the internal clock frequency of the MCP2221A.
+const ClkHz = 12000000
+
+// WordSet and WordClr are the logical true and false values for a single word
+// (byte) in a message.
 const (
-	CmdStatus    byte = 0x10
-	CmdSetParams byte = 0x10
-
-	CmdFlashRead   byte = 0xB0
-	CmdFlashWrite  byte = 0xB1
-	CmdFlashPasswd byte = 0xB2
-
-	CmdI2CWrite         byte = 0x90
-	CmdI2CWriteRepStart byte = 0x92
-	CmdI2CWriteNoStop   byte = 0x94
-	CmdI2CRead          byte = 0x91
-	CmdI2CReadRepStart  byte = 0x93
-	CmdI2CReadGetData   byte = 0x40
-
-	CmdGPIOSet byte = 0x50
-	CmdGPIOGet byte = 0x51
-
-	CmdSRAMSet byte = 0x60
-	CmdSRAMGet byte = 0x61
-
-	CmdReset byte = 0x70
+	WordSet byte = 0xFF // All bits set
+	WordClr byte = 0x00 // All bits clear
 )
 
+// makeMsg creates a new zero'd slice with required length of command and
+// response messages, both of which are always 64 bytes.
+func makeMsg() []byte { return make([]byte, MsgSz) }
+
+// logMsg pretty-prints a given byte slice using the default log object. Each
+// element is printed on its own line with the following format in columns of
+// uniform-width:
+//    IDX: DEC {0xHEX} [0bBIN]
+func logMsg(buf []byte) {
+
+	if nil == buf || 0 == len(buf) {
+		return
+	}
+
+	// calculate the number of digits in the final slice index
+	n := int(math.Floor(math.Log10(float64(len(buf)-1)))) + 1
+	for i, b := range buf {
+		log.Printf("%*d: %3d {0x%02X} [0b%08b]", n, i, b, b, b)
+	}
+
+}
+
+// Constants for all recognized commands (and responses). These are sent as the
+// first word in all command messages, and are echoed back as the first word in
+// all response messages.
+const (
+	cmdStatus    byte = 0x10
+	cmdSetParams byte = 0x10
+
+	cmdFlashRead   byte = 0xB0
+	cmdFlashWrite  byte = 0xB1
+	cmdFlashPasswd byte = 0xB2
+
+	cmdI2CWrite         byte = 0x90
+	cmdI2CWriteRepStart byte = 0x92
+	cmdI2CWriteNoStop   byte = 0x94
+	cmdI2CRead          byte = 0x91
+	cmdI2CReadRepStart  byte = 0x93
+	cmdI2CReadGetData   byte = 0x40
+
+	cmdGPIOSet byte = 0x50
+	cmdGPIOGet byte = 0x51
+
+	cmdSRAMSet byte = 0x60
+	cmdSRAMGet byte = 0x61
+
+	cmdReset byte = 0x70
+)
+
+// -----------------------------------------------------------------------------
 // -- DEVICE -------------------------------------------------------- [start] --
+//
 
+// MCP2221A is the primary object used for interacting with the device.
+// The struct contains a pointer to an opened HIDAPI device through which all
+// USB communication occurs.
+// If multiple MCP2221A devices are connected to the host PC, the index of the
+// desired target can be determined with AttachedDevices() and passed to New().
+// An index of 0 will use the first device found.
+// Call Close() on the device when finished to also close the USB connection.
 type MCP2221A struct {
 	Device *usb.Device
+	Index  byte
 	VID    uint16
 	PID    uint16
 }
 
+// AttachedDevices returns a slice of all connected USB HID device descriptors
+// matching the given VID and PID.
+// Returns an empty slice if no devices were found. See the hid package
+// documentation for details on inspecting the returned objects.
 func AttachedDevices(vid uint16, pid uint16) []usb.DeviceInfo {
 
 	var info []usb.DeviceInfo
@@ -60,10 +120,15 @@ func AttachedDevices(vid uint16, pid uint16) []usb.DeviceInfo {
 	return info
 }
 
-func New(idx uint8, vid uint16, pid uint16) (*MCP2221A, error) {
+// New returns a new MCP2221A object with the given VID and PID, enumerated at
+// the given index (an index of 0 will use the first device found).
+// Returns an error if index is out of range (according to AttachedDevices()) or
+// if the USB HID device could not be claimed or opened.
+func New(idx byte, vid uint16, pid uint16) (*MCP2221A, error) {
 
 	mcp := &MCP2221A{
 		Device: nil,
+		Index:  idx,
 		VID:    vid,
 		PID:    pid,
 	}
@@ -81,6 +146,8 @@ func New(idx uint8, vid uint16, pid uint16) (*MCP2221A, error) {
 	return mcp, nil
 }
 
+// valid verifies the receiver and USB HID device are both not nil, returning
+// false and an error indicating which caused the failure.
 func (mcp *MCP2221A) valid() (bool, error) {
 
 	if nil == mcp {
@@ -88,12 +155,14 @@ func (mcp *MCP2221A) valid() (bool, error) {
 	}
 
 	if nil == mcp.Device {
-		return false, fmt.Errorf("nil MCP2221A HID device")
+		return false, fmt.Errorf("nil USB HID device")
 	}
 
 	return true, nil
 }
 
+// Close will clean up any resources and close the USB HID connection if any
+// error occurred.
 func (mcp *MCP2221A) Close() error {
 
 	if ok, err := mcp.valid(); !ok {
@@ -106,7 +175,7 @@ func (mcp *MCP2221A) Close() error {
 	return nil
 }
 
-func (mcp *MCP2221A) Send(cmd byte, data []byte) ([]byte, error) {
+func (mcp *MCP2221A) send(cmd byte, data []byte) ([]byte, error) {
 
 	if ok, err := mcp.valid(); !ok {
 		return nil, err
@@ -117,131 +186,178 @@ func (mcp *MCP2221A) Send(cmd byte, data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("Write([cmd=0x%02X]): %v", cmd, err)
 	}
 
-	rsp := rspBuf()
+	// logMsg(data)
+
+	if cmdReset == cmd {
+		// reset is the only command that does not have a response packet
+		return nil, nil
+	}
+
+	rsp := makeMsg()
 	if recv, err := mcp.Device.Read(rsp); nil != err {
 		return nil, fmt.Errorf("Read([cmd=0x%02X]): %v", cmd, err)
 	} else {
-		if recv < PktSz {
-			return nil, fmt.Errorf("Read([cmd=0x%02X]): short read (%d of %d bytes)", cmd, recv, PktSz)
+		if recv < MsgSz {
+			return rsp, fmt.Errorf("Read([cmd=0x%02X]): short read (%d of %d bytes)", cmd, recv, MsgSz)
+		}
+		if rsp[0] != cmd || rsp[1] != WordClr {
+			return rsp, fmt.Errorf("Read([cmd=0x%02X]): command failed", cmd)
 		}
 	}
 
 	return rsp, nil
 }
 
-func (mcp *MCP2221A) Reset() error {
+func (mcp *MCP2221A) Reset(timeout time.Duration) error {
 
 	if ok, err := mcp.valid(); !ok {
 		return err
 	}
 
-	cmd := cmdBuf()
+	cmd := makeMsg()
 	cmd[1] = 0xAB
 	cmd[2] = 0xCD
 	cmd[3] = 0xEF
 
-	if _, err := mcp.Send(CmdReset, cmd); nil != err {
-		return fmt.Errorf("Send(): %v", err)
+	if _, err := mcp.send(cmdReset, cmd); nil != err {
+		return fmt.Errorf("send(): %v", err)
+	}
+
+	ch := make(chan *usb.Device)
+
+	go func(c chan *usb.Device) {
+		var m *MCP2221A = nil
+		for nil == m {
+			m, _ = New(mcp.Index, mcp.VID, mcp.PID)
+		}
+		c <- m.Device
+	}(ch)
+
+	select {
+	case <-time.After(timeout):
+		return fmt.Errorf("New([%d]): timed out opening USB HID device", mcp.Index)
+	case dev := <-ch:
+		mcp.Device = dev
 	}
 
 	return nil
 }
 
-type Status struct {
-	Cmd        byte
-	OK         bool
-	I2CCancel  byte
-	I2CSpeedCh byte
-	I2CDivCh   byte
-	I2CState   byte
-	I2CReqSz   uint16
-	I2CSentSz  uint16
-	I2CCounter byte
-	I2CDiv     byte
-	I2CTimeVal byte
-	I2CAddr    uint16
-	I2CSCL     byte
-	I2CSDA     byte
-	Interrupt  byte
-	I2CReadPnd byte
-	HWRevMaj   rune
-	HWRevMin   rune
-	FWRevMaj   rune
-	FWRevMin   rune
-	ADCCh0     uint16
-	ADCCh1     uint16
-	ADCCh2     uint16
+type status struct {
+	cmd        byte
+	ok         bool
+	i2cCancel  byte
+	i2cSpeedCh byte
+	i2cDivCh   byte
+	i2cState   byte
+	i2cReqSz   uint16
+	i2cSentSz  uint16
+	i2cCounter byte
+	i2cDiv     byte
+	i2cTimeVal byte
+	i2cAddr    uint16
+	i2cSCL     byte
+	i2cSDA     byte
+	interrupt  byte
+	i2cReadPnd byte
+	hwRevMaj   rune
+	hwRevMin   rune
+	fwRevMaj   rune
+	fwRevMin   rune
+	adcCh0     uint16
+	adcCh1     uint16
+	adcCh2     uint16
 }
 
-var (
-	I2CCancelDesc = map[byte]string{
-		0x00: "idle",
-		0x10: "marked for cancellation",
-		0x11: "no transfer (ignored)",
+func newStatus(pkt []byte) *status {
+	if nil == pkt || len(pkt) < MsgSz {
+		return nil
 	}
-	I2CSpeedChDesc = map[byte]string{
-		0x00: "idle",
-		0x20: "new speed accepted",
-		0x21: "cannot set speed",
+	return &status{
+		cmd:        pkt[0],
+		ok:         (0 == pkt[1]),
+		i2cCancel:  pkt[2],
+		i2cSpeedCh: pkt[3],
+		i2cDivCh:   pkt[4],
+		// bytes 5-7 reserved
+		i2cState:   pkt[8],
+		i2cReqSz:   (uint16(pkt[10]) << 8) | uint16(pkt[9]),
+		i2cSentSz:  (uint16(pkt[12]) << 8) | uint16(pkt[11]),
+		i2cCounter: pkt[13],
+		i2cDiv:     pkt[14],
+		i2cTimeVal: pkt[15],
+		i2cAddr:    (uint16(pkt[17]) << 8) | uint16(pkt[16]),
+		// bytes 18-21 reserved
+		i2cSCL:     pkt[22],
+		i2cSDA:     pkt[23],
+		interrupt:  pkt[24],
+		i2cReadPnd: pkt[25],
+		// bytes 26-45 reserved
+		hwRevMaj: rune(pkt[46]),
+		hwRevMin: rune(pkt[47]),
+		fwRevMaj: rune(pkt[48]),
+		fwRevMin: rune(pkt[49]),
+		adcCh0:   (uint16(pkt[51]) << 8) | uint16(pkt[50]),
+		adcCh1:   (uint16(pkt[53]) << 8) | uint16(pkt[52]),
+		adcCh2:   (uint16(pkt[55]) << 8) | uint16(pkt[54]),
 	}
-)
+}
 
-func (mcp *MCP2221A) Status() (*Status, error) {
+func (mcp *MCP2221A) status() (*status, error) {
 
 	if ok, err := mcp.valid(); !ok {
 		return nil, err
 	}
 
-	cmd := cmdBuf()
-
-	if rsp, err := mcp.Send(CmdStatus, cmd); nil != err {
-
-		return nil, fmt.Errorf("Send(): %v", err)
-
+	cmd := makeMsg()
+	if rsp, err := mcp.send(cmdStatus, cmd); nil != err {
+		return nil, fmt.Errorf("send(): %v", err)
 	} else {
-
-		return &Status{
-			Cmd:        rsp[0],
-			OK:         (0 == rsp[1]),
-			I2CCancel:  rsp[2],
-			I2CSpeedCh: rsp[3],
-			I2CDivCh:   rsp[4],
-			// bytes 5-7 reserved
-			I2CState:   rsp[8],
-			I2CReqSz:   (uint16(rsp[10]) << 8) | uint16(rsp[9]),
-			I2CSentSz:  (uint16(rsp[12]) << 8) | uint16(rsp[11]),
-			I2CCounter: rsp[13],
-			I2CDiv:     rsp[14],
-			I2CTimeVal: rsp[15],
-			I2CAddr:    (uint16(rsp[17]) << 8) | uint16(rsp[16]),
-			// bytes 18-21 reserved
-			I2CSCL:     rsp[22],
-			I2CSDA:     rsp[23],
-			Interrupt:  rsp[24],
-			I2CReadPnd: rsp[25],
-			// bytes 26-45 reserved
-			HWRevMaj: rune(rsp[46]),
-			HWRevMin: rune(rsp[47]),
-			FWRevMaj: rune(rsp[48]),
-			FWRevMin: rune(rsp[49]),
-			ADCCh0:   (uint16(rsp[51]) << 8) | uint16(rsp[50]),
-			ADCCh1:   (uint16(rsp[53]) << 8) | uint16(rsp[52]),
-			ADCCh2:   (uint16(rsp[55]) << 8) | uint16(rsp[54]),
-		}, nil
+		return newStatus(rsp), nil
 	}
+
 }
 
 // -- DEVICE ---------------------------------------------------------- [end] --
+// -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// -- SRAM ---------------------------------------------------------- [start] --
+
+func (mcp *MCP2221A) config(start byte, stop byte) ([]byte, error) {
+
+	if ok, err := mcp.valid(); !ok {
+		return nil, err
+	}
+
+	if (start > stop) || (stop >= MsgSz) {
+		return nil, fmt.Errorf("invalid byte range: [%d, %d]", start, stop)
+	}
+
+	cmd := makeMsg()
+	if rsp, err := mcp.send(cmdSRAMGet, cmd); nil != err {
+		return nil, fmt.Errorf("send(): %v", err)
+	} else {
+		return rsp[start : stop+1], nil
+	}
+
+}
+
+// -- SRAM ------------------------------------------------------------ [end] --
+// -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
 // -- GPIO ---------------------------------------------------------- [start] --
 
 type (
 	GPIOMode byte
-	GPIODir  bool
+	GPIODir  byte
 )
 
+// Constants associated with the GPIO module.
 const (
-	GPIOPinCount = 4
+	// GPPinCount is the number of GPIO pins available.
+	GPPinCount = 4
 	// GPIO operation modes
 	ModeGPIO     GPIOMode = 0x00
 	ModeDediFunc GPIOMode = 0x01
@@ -249,33 +365,31 @@ const (
 	ModeAltFunc1 GPIOMode = 0x03
 	ModeAltFunc2 GPIOMode = 0x04
 	ModeAltFunc3 GPIOMode = 0x05
+	ModeInvalid  GPIOMode = 0xEE
 	// GPIO directions
-	DirOut GPIODir = false
-	DirIn  GPIODir = true
+	DirOut     GPIODir = 0x00
+	DirIn      GPIODir = 0x01
+	DirInvalid GPIODir = 0xEF
 )
 
-var (
-	GPIODirValue = map[GPIODir]byte{false: 0, true: 1}
-)
-
-func (mcp *MCP2221A) GPIOConfig(pin uint8, mode GPIOMode, dir GPIODir, val byte) error {
+func (mcp *MCP2221A) GPIOSetConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) error {
 
 	if ok, err := mcp.valid(); !ok {
 		return err
 	}
 
-	if pin < 0 || pin >= GPIOPinCount {
+	if pin >= GPPinCount {
 		return fmt.Errorf("invalid GPIO pin: %d", pin)
 	}
 
-	cmd := cmdBuf()
+	cmd := makeMsg()
 
-	if cur, err := mcp.ConfigGet(22, 25); nil != err {
-		return fmt.Errorf("ConfigGet(): %v", err)
+	if cur, err := mcp.config(22, 25); nil != err {
+		return fmt.Errorf("config(): %v", err)
 	} else {
 		// copy the current GPIO settings because they will -all- be set with the
 		// command request
-		cmd[7] = 0xFF // alter GP designation
+		cmd[7] = WordSet // alter GP designation
 		cmd[8] = cur[0]
 		cmd[9] = cur[1]
 		cmd[10] = cur[2]
@@ -283,60 +397,437 @@ func (mcp *MCP2221A) GPIOConfig(pin uint8, mode GPIOMode, dir GPIODir, val byte)
 	}
 
 	// and then update our selected pin as desired
-	cmd[8+pin] = (val << 4) | (GPIODirValue[dir] << 3) | byte(mode)
+	cmd[8+pin] = (val << 4) | (byte(dir) << 3) | byte(mode)
 
-	if _, err := mcp.Send(CmdSRAMSet, cmd); nil != err {
-		return fmt.Errorf("Send(): %v", err)
+	if _, err := mcp.send(cmdSRAMSet, cmd); nil != err {
+		return fmt.Errorf("send(): %v", err)
 	}
 
 	return nil
 }
 
-func (mcp *MCP2221A) GPIOSet(pin int, val byte) error {
+func (mcp *MCP2221A) GPIOGetConfig(pin byte) (byte, GPIOMode, GPIODir, error) {
+
+	if ok, err := mcp.valid(); !ok {
+		return WordClr, ModeInvalid, DirInvalid, err
+	}
+
+	if pin >= GPPinCount {
+		return WordClr, ModeInvalid, DirInvalid, fmt.Errorf("invalid GPIO pin: %d", pin)
+	}
+
+	if rsp, err := mcp.config(22, 25); nil != err {
+		return WordClr, ModeInvalid, DirInvalid, fmt.Errorf("config(): %v", err)
+	} else {
+		mode := GPIOMode(rsp[pin] & 0x07)
+		dir := GPIODir((rsp[pin] >> 3) & 0x01)
+		val := (rsp[pin] >> 4) & 0x01
+		return val, mode, dir, nil
+	}
+
+}
+
+func (mcp *MCP2221A) GPIOSet(pin byte, val byte) error {
 
 	if ok, err := mcp.valid(); !ok {
 		return err
 	}
 
-	if pin < 0 || pin >= GPIOPinCount {
+	if pin >= GPPinCount {
 		return fmt.Errorf("invalid GPIO pin: %d", pin)
 	}
 
-	cmd := cmdBuf()
+	cmd := makeMsg()
 
 	i := 2 + 4*pin
-	cmd[i+0] = 0xFF
+	cmd[i+0] = WordSet // alter output value (to val)
 	cmd[i+1] = val
-	cmd[i+2] = 0xFF
-	cmd[i+3] = 0
+	cmd[i+2] = WordSet // alter GPIO direction (to output)
+	cmd[i+3] = byte(DirOut)
 
-	if _, err := mcp.Send(CmdGPIOSet, cmd); nil != err {
-		return fmt.Errorf("Send(): %v", err)
+	if _, err := mcp.send(cmdGPIOSet, cmd); nil != err {
+		return fmt.Errorf("send(): %v", err)
 	}
 
 	return nil
 }
 
+func (mcp *MCP2221A) GPIOGet(pin byte) (byte, error) {
+
+	if ok, err := mcp.valid(); !ok {
+		return WordClr, err
+	}
+
+	if pin >= GPPinCount {
+		return WordClr, fmt.Errorf("invalid GPIO pin: %d", pin)
+	}
+
+	cmd := makeMsg()
+	if rsp, err := mcp.send(cmdGPIOGet, cmd); nil != err {
+		return WordClr, fmt.Errorf("send(): %v", err)
+	} else {
+		i := 2 + 2*pin
+		if byte(ModeInvalid) == rsp[i] {
+			return WordClr, fmt.Errorf("pin not in GPIO mode: %d", pin)
+		} else {
+			return rsp[i], nil
+		}
+	}
+
+}
+
 // -- GPIO ------------------------------------------------------------ [end] --
+// -----------------------------------------------------------------------------
 
-// -- SRAM ---------------------------------------------------------- [start] --
+// -----------------------------------------------------------------------------
+// -- I²C ----------------------------------------------------------- [start] --
 
-func (mcp *MCP2221A) ConfigGet(start uint8, stop uint8) ([]byte, error) {
+// Constants associated with the I²C module.
+const (
+	I2CBaudRate = 100000
+	I2CMinAddr  = 0x08
+	I2CMaxAddr  = 0x77
+
+	i2cReadMax  = 60 // maximum number of bytes we can read at a time
+	i2cWriteMax = 60 // maximum number of bytes we can write at a time
+
+	// these constants were copied from Adafruit_Blinka mcp2221.py package. some
+	// aren't listed anywhere in the datasheet, so not sure where they came from.
+
+	i2cStateStartTimeout    byte = 0x12
+	i2cStateRepStartTimeout byte = 0x17
+	i2cStateStopTimeout     byte = 0x62
+
+	i2cStateAddrSend    byte = 0x21
+	i2cStateAddrTimeout byte = 0x23
+	i2cStateAddrNACK    byte = 0x25
+
+	i2cMaskAddrNACK byte = 0x40
+
+	i2cStatePartialData   byte = 0x41
+	i2cStateReadMore      byte = 0x43
+	i2cStateWriteTimeout  byte = 0x44
+	i2cStateWritingNoStop byte = 0x45
+	i2cStateReadTimeout   byte = 0x52
+	i2cStateReadPartial   byte = 0x54
+	i2cStateReadComplete  byte = 0x55
+
+	i2cStateReadError byte = 0x7F
+
+	i2cReadRetry  = 50
+	i2cWriteRetry = 50
+)
+
+func (mcp *MCP2221A) I2CSetConfig(baud uint32) error {
+
+	if ok, err := mcp.valid(); !ok {
+		return err
+	}
+
+	if baud > ClkHz/3 || baud < ClkHz/258 {
+		return fmt.Errorf("invalid baud rate: %d", baud)
+	}
+
+	cmd := makeMsg()
+	cmd[3] = 0x20
+	cmd[4] = byte(ClkHz/baud - 3)
+
+	if rsp, err := mcp.send(cmdSetParams, cmd); nil != err {
+		return fmt.Errorf("send(): %v", err)
+	} else {
+		stat := newStatus(rsp)
+		if 0x21 == stat.i2cSpeedCh {
+			return fmt.Errorf("transfer in progress")
+		}
+	}
+
+	return nil
+}
+
+func (mcp *MCP2221A) I2CCancel() error {
+
+	if ok, err := mcp.valid(); !ok {
+		return err
+	}
+
+	cmd := makeMsg()
+	cmd[2] = 0x10
+
+	if rsp, err := mcp.send(cmdSetParams, cmd); nil != err {
+		return fmt.Errorf("send(): %v", err)
+	} else {
+		stat := newStatus(rsp)
+		if 0x10 == stat.i2cCancel {
+			time.Sleep(300 * time.Microsecond)
+		}
+	}
+
+	return nil
+}
+
+func (mcp *MCP2221A) I2CWrite(stop bool, addr uint8, out []byte, cnt uint16) error {
+
+	if ok, err := mcp.valid(); !ok {
+		return err
+	}
+
+	if cnt <= 0 {
+		return nil
+	}
+
+	if int(cnt) > len(out) {
+		cnt = uint16(len(out))
+	}
+
+	var (
+		stat *status
+		err  error
+	)
+
+	if stat, err = mcp.status(); nil != err {
+		return fmt.Errorf("status(): %v", err)
+	}
+
+	if WordClr != stat.i2cState {
+		if err := mcp.I2CCancel(); nil != err {
+			return fmt.Errorf("I2CCancel(): %v", err)
+		}
+	}
+
+	unrecoverable := func(b byte) bool {
+		return b == i2cStateStartTimeout ||
+			b == i2cStateStopTimeout ||
+			b == i2cStateAddrTimeout ||
+			b == i2cStateAddrNACK ||
+			b == i2cStateWriteTimeout
+	}
+
+	cmdID := cmdI2CWrite
+	if !stop {
+		cmdID = cmdI2CWriteNoStop
+	}
+
+	pos := uint16(0)
+	retry := 0
+	for pos < cnt {
+
+		sz := cnt - pos
+		if sz > i2cWriteMax {
+			sz = i2cWriteMax
+		}
+
+		cmd := makeMsg()
+		cmd[1] = byte(cnt & 0xFF)
+		cmd[2] = byte((cnt >> 8) & 0xFF)
+		cmd[3] = byte(addr << 1)
+
+		copy(cmd[4:], out[pos:pos+sz])
+
+		retry := 0
+		for retry < i2cWriteRetry {
+
+			if rsp, err := mcp.send(cmdID, cmd); nil != err {
+				if nil != rsp {
+					if unrecoverable(rsp[2]) {
+						return fmt.Errorf("send(): unrecoverable I2C write error")
+					}
+				} else {
+					return fmt.Errorf("send(): %v", err)
+				}
+				time.Sleep(300 * time.Microsecond)
+			} else {
+
+				partial := true
+				for partial {
+					if stat, err := mcp.status(); nil != err {
+						return fmt.Errorf("status(): %v", err)
+					} else {
+						partial = i2cStatePartialData == stat.i2cState
+					}
+				}
+
+				pos += sz
+				break
+			}
+
+			retry++
+		}
+
+		if retry >= i2cWriteRetry {
+			return fmt.Errorf("too many retries")
+		}
+
+	}
+
+	retry = 0
+	for retry < i2cWriteRetry {
+
+		if stat, err := mcp.status(); nil != err {
+			return fmt.Errorf("status(): %v", err)
+		} else {
+			if WordClr == stat.i2cState {
+				break
+			}
+			if cmdI2CWriteNoStop == cmdID && i2cStateWritingNoStop == stat.i2cState {
+				break
+			}
+			if unrecoverable(stat.i2cState) {
+				return fmt.Errorf("send(): unrecoverable I2C write error")
+			}
+			time.Sleep(300 * time.Microsecond)
+		}
+
+	}
+
+	return nil
+}
+
+func (mcp *MCP2221A) I2CRead(rep bool, addr uint8, cnt uint16) ([]byte, error) {
 
 	if ok, err := mcp.valid(); !ok {
 		return nil, err
 	}
 
-	if (start > stop) || (stop >= PktSz) {
-		return nil, fmt.Errorf("invalid byte range: [%d, %d]", start, stop)
+	if cnt <= 0 {
+		return []byte{}, nil
 	}
 
-	cmd := cmdBuf()
-	if rsp, err := mcp.Send(CmdSRAMGet, cmd); nil != err {
-		return nil, fmt.Errorf("Send(): %v", err)
-	} else {
-		return rsp[start : stop+1], nil
+	var (
+		stat *status
+		err  error
+	)
+
+	if stat, err = mcp.status(); nil != err {
+		return nil, fmt.Errorf("status(): %v", err)
 	}
+
+	if WordClr != stat.i2cState && i2cStateWritingNoStop != stat.i2cState {
+		if err := mcp.I2CCancel(); nil != err {
+			return nil, fmt.Errorf("I2CCancel(): %v", err)
+		}
+	}
+
+	cmd := makeMsg()
+	cmd[1] = byte(cnt & 0xFF)
+	cmd[2] = byte((cnt >> 8) & 0xFF)
+	cmd[3] = byte((addr << 1) | 0x01)
+
+	cmdID := cmdI2CRead
+	if rep {
+		cmdID = cmdI2CReadRepStart
+	}
+
+	if _, err := mcp.send(cmdID, cmd); nil != err {
+		return nil, fmt.Errorf("send(): %v", err)
+	}
+
+	in := make([]byte, cnt)
+
+	pos := uint16(0)
+	for pos < cnt {
+
+		var (
+			rsp []byte
+			err error
+		)
+
+		retry := 0
+		for retry < i2cReadRetry {
+
+			retry++
+
+			cmd := makeMsg()
+			if rsp, err = mcp.send(cmdI2CReadGetData, cmd); nil != err {
+				return nil, fmt.Errorf("send(): %v", err)
+			} else {
+
+				if i2cStatePartialData == rsp[1] || i2cStateReadError == rsp[3] {
+					time.Sleep(300 * time.Microsecond)
+					continue
+				}
+				if i2cStateAddrNACK == rsp[2] {
+					return nil, fmt.Errorf("send(): NACK from address (0x%02X)", addr)
+				}
+				if WordClr == rsp[2] && 0 == rsp[3] {
+					break
+				}
+				if i2cStateReadPartial == rsp[2] || i2cStateReadComplete == rsp[2] {
+					break
+				}
+
+			}
+
+		}
+
+		if retry >= i2cReadRetry {
+			return nil, fmt.Errorf("too many retries")
+		}
+
+		if len(rsp) > 0 {
+			sz := cnt - pos
+			if sz > i2cReadMax {
+				sz = i2cReadMax
+			}
+			copy(in[pos:], rsp[4:4+sz])
+			pos += sz
+		}
+	}
+
+	return in, nil
 }
 
-// -- SRAM ------------------------------------------------------------ [end] --
+func (mcp *MCP2221A) I2CReadReg(addr uint8, reg uint8, cnt uint16) ([]byte, error) {
+
+	if err := mcp.I2CWrite(false, addr, []byte{reg}, 1); nil != err {
+		return nil, fmt.Errorf("I2CWrite([0x%02X]): %v", addr, err)
+	}
+
+	if reg, err := mcp.I2CRead(true, addr, cnt); nil != err {
+		return nil, fmt.Errorf("I2CRead([0x%02X]): %v", addr, err)
+	} else {
+		return reg, nil
+	}
+
+}
+
+func (mcp *MCP2221A) I2CReadReg16(addr uint8, reg uint16, msb bool, cnt uint16) ([]byte, error) {
+
+	buf := []byte{byte(reg & 0xFF), byte((reg >> 8) & 0xFF)}
+	if msb {
+		buf = []byte{buf[1], buf[0]}
+	}
+
+	if err := mcp.I2CWrite(false, addr, buf, 2); nil != err {
+		return nil, fmt.Errorf("I2CWrite([0x%02X]): %v", addr, err)
+	}
+
+	if reg, err := mcp.I2CRead(true, addr, cnt); nil != err {
+		return nil, fmt.Errorf("I2CRead([0x%02X]): %v", addr, err)
+	} else {
+		return reg, nil
+	}
+
+}
+
+func (mcp *MCP2221A) I2CScan(start uint8, stop uint8) ([]uint8, error) {
+
+	if ok, err := mcp.valid(); !ok {
+		return nil, err
+	}
+
+	if start > stop {
+		return nil, fmt.Errorf("invalid address range [%d, %d]", start, stop)
+	}
+
+	found := []byte{}
+	for addr := start; addr <= stop; addr++ {
+		if err := mcp.I2CWrite(true, addr, []byte{0x00}, 1); nil == err {
+			found = append(found, byte(addr))
+		}
+	}
+
+	return found, nil
+}
+
+// -- I²C ------------------------------------------------------------- [end] --
+// -----------------------------------------------------------------------------
