@@ -692,12 +692,17 @@ func (mcp *MCP2221A) I2CWrite(stop bool, addr uint8, out []byte, cnt uint16) err
 		cmd[2] = byte((cnt >> 8) & 0xFF)
 		cmd[3] = byte(addr << 1)
 
+		sendCMD := cmdID
+		if pos+sz > cnt {
+			sendCMD = cmdI2CWriteNoStop
+		}
+
 		copy(cmd[4:], out[pos:pos+sz])
 
 		retry := 0
 		for retry < i2cWriteRetry {
 
-			if rsp, err := mcp.send(cmdID, cmd); nil != err {
+			if rsp, err := mcp.send(sendCMD, cmd); nil != err {
 				if nil != rsp {
 					if unrecoverable(rsp[2]) {
 						return fmt.Errorf("send(): unrecoverable I²C write error")
