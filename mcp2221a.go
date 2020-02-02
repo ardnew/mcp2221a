@@ -161,8 +161,9 @@ func (mcp *MCP2221A) valid() (bool, error) {
 	return true, nil
 }
 
-// Close will clean up any resources and close the USB HID connection if any
-// error occurred.
+// Close will clean up any resources and close the USB HID connection.
+// Returns an error if the USB HID device is invalid or failed to close
+// gracefully.
 func (mcp *MCP2221A) Close() error {
 
 	if ok, err := mcp.valid(); !ok {
@@ -175,6 +176,19 @@ func (mcp *MCP2221A) Close() error {
 	return nil
 }
 
+// send transmits an MCP2221A command message and returns the response message.
+// The data argument is a byte slice created by makeMsg(), and the cmd argument
+// is one of the recognized command byte constants. The cmd byte is inserted
+// into the slice at the appropriate position automatically.
+//
+// A nil slice is returned with an error if the receiver is invalid or if the
+// USB HID device could not be written to or read from.
+// If any data was successfully read from the USB HID device, then that data
+// slice is returned along with an error if fewer than expected bytes were
+// received or if the reserved status byte (common to all response messages)
+// does not indicate success.
+// A nil slice and nil error are returned if the reset command is received and
+// successfully transmitted.
 func (mcp *MCP2221A) send(cmd byte, data []byte) ([]byte, error) {
 
 	if ok, err := mcp.valid(); !ok {
@@ -208,6 +222,10 @@ func (mcp *MCP2221A) send(cmd byte, data []byte) ([]byte, error) {
 	return rsp, nil
 }
 
+// Reset sends a reset command and then attempts to reopen a connection to the
+// same USB HID device within a given timeout duration.
+// Returns an error if the receiver is invalid, the reset command could not be
+// sent, or if the device could not be reopened before the given timeout period.
 func (mcp *MCP2221A) Reset(timeout time.Duration) error {
 
 	if ok, err := mcp.valid(); !ok {
@@ -243,6 +261,8 @@ func (mcp *MCP2221A) Reset(timeout time.Duration) error {
 	return nil
 }
 
+// status contains conveniently-typed fields for all data parsed from the
+// response message of a status command.
 type status struct {
 	cmd        byte
 	ok         bool
@@ -269,40 +289,47 @@ type status struct {
 	adcCh2     uint16
 }
 
-func newStatus(pkt []byte) *status {
-	if nil == pkt || len(pkt) < MsgSz {
+// newStatus parses the response message of a status command.
+// Returns a pointer to a newly-created status object on success, or nil if the
+// given response message is nil or has inadequate length.
+func newStatus(msg []byte) *status {
+	if nil == msg || len(msg) < MsgSz {
 		return nil
 	}
 	return &status{
-		cmd:        pkt[0],
-		ok:         (0 == pkt[1]),
-		i2cCancel:  pkt[2],
-		i2cSpeedCh: pkt[3],
-		i2cDivCh:   pkt[4],
+		cmd:        msg[0],
+		ok:         (0 == msg[1]),
+		i2cCancel:  msg[2],
+		i2cSpeedCh: msg[3],
+		i2cDivCh:   msg[4],
 		// bytes 5-7 reserved
-		i2cState:   pkt[8],
-		i2cReqSz:   (uint16(pkt[10]) << 8) | uint16(pkt[9]),
-		i2cSentSz:  (uint16(pkt[12]) << 8) | uint16(pkt[11]),
-		i2cCounter: pkt[13],
-		i2cDiv:     pkt[14],
-		i2cTimeVal: pkt[15],
-		i2cAddr:    (uint16(pkt[17]) << 8) | uint16(pkt[16]),
+		i2cState:   msg[8],
+		i2cReqSz:   (uint16(msg[10]) << 8) | uint16(msg[9]),
+		i2cSentSz:  (uint16(msg[12]) << 8) | uint16(msg[11]),
+		i2cCounter: msg[13],
+		i2cDiv:     msg[14],
+		i2cTimeVal: msg[15],
+		i2cAddr:    (uint16(msg[17]) << 8) | uint16(msg[16]),
 		// bytes 18-21 reserved
-		i2cSCL:     pkt[22],
-		i2cSDA:     pkt[23],
-		interrupt:  pkt[24],
-		i2cReadPnd: pkt[25],
+		i2cSCL:     msg[22],
+		i2cSDA:     msg[23],
+		interrupt:  msg[24],
+		i2cReadPnd: msg[25],
 		// bytes 26-45 reserved
-		hwRevMaj: rune(pkt[46]),
-		hwRevMin: rune(pkt[47]),
-		fwRevMaj: rune(pkt[48]),
-		fwRevMin: rune(pkt[49]),
-		adcCh0:   (uint16(pkt[51]) << 8) | uint16(pkt[50]),
-		adcCh1:   (uint16(pkt[53]) << 8) | uint16(pkt[52]),
-		adcCh2:   (uint16(pkt[55]) << 8) | uint16(pkt[54]),
+		hwRevMaj: rune(msg[46]),
+		hwRevMin: rune(msg[47]),
+		fwRevMaj: rune(msg[48]),
+		fwRevMin: rune(msg[49]),
+		adcCh0:   (uint16(msg[51]) << 8) | uint16(msg[50]),
+		adcCh1:   (uint16(msg[53]) << 8) | uint16(msg[52]),
+		adcCh2:   (uint16(msg[55]) << 8) | uint16(msg[54]),
 	}
 }
 
+// status sends a status command request, parsing the response into an object
+// referred to by the return value.
+// Returns a pointer to the parsed object on success, or nil along with an error
+// if the receiver is invalid or the status command could not be sent.
 func (mcp *MCP2221A) status() (*status, error) {
 
 	if ok, err := mcp.valid(); !ok {
@@ -324,6 +351,10 @@ func (mcp *MCP2221A) status() (*status, error) {
 // -----------------------------------------------------------------------------
 // -- SRAM ---------------------------------------------------------- [start] --
 
+// config sends a command requesting current SRAM configuration and returns a
+// byte slice within the given interval from the response message.
+// Returns a nil slice and error if the receiver is invalid, the given range is
+// invalid, or if the configuration command could not be sent.
 func (mcp *MCP2221A) config(start byte, stop byte) ([]byte, error) {
 
 	if ok, err := mcp.valid(); !ok {
@@ -349,6 +380,8 @@ func (mcp *MCP2221A) config(start byte, stop byte) ([]byte, error) {
 // -----------------------------------------------------------------------------
 // -- GPIO ---------------------------------------------------------- [start] --
 
+// GPIOMode and GPIODir represent two of the configuration parameters for all
+// of the general purpose pins.
 type (
 	GPIOMode byte
 	GPIODir  byte
@@ -358,20 +391,26 @@ type (
 const (
 	// GPPinCount is the number of GPIO pins available.
 	GPPinCount = 4
-	// GPIO operation modes
-	ModeGPIO     GPIOMode = 0x00
-	ModeDediFunc GPIOMode = 0x01
-	ModeAltFunc0 GPIOMode = 0x02
-	ModeAltFunc1 GPIOMode = 0x03
-	ModeAltFunc2 GPIOMode = 0x04
-	ModeAltFunc3 GPIOMode = 0x05
-	ModeInvalid  GPIOMode = 0xEE
+
+	// GPIO operation modes:         GP0       GP1       GP2      GP3
+	ModeGPIO     GPIOMode = 0x00 //  GPIO      GPIO      GPIO     GPIO
+	ModeDediFunc GPIOMode = 0x01 //  SSPND     CLK OUT   USBCFG   LED_I2C
+	ModeAltFunc0 GPIOMode = 0x02 //  LED URX   ADC1      ADC2     ADC3
+	ModeAltFunc1 GPIOMode = 0x03 //  --        LED UTX   DAC1     DAC2
+	ModeAltFunc2 GPIOMode = 0x04 //  --        IOC       --       --
+	ModeInvalid  GPIOMode = 0xEE // invalid mode is used as error condition
+
 	// GPIO directions
-	DirOut     GPIODir = 0x00
-	DirIn      GPIODir = 0x01
-	DirInvalid GPIODir = 0xEF
+	DirOut     GPIODir = 0x00 // direction OUT is used for writing values to pins
+	DirIn      GPIODir = 0x01 // direction IN is used for reading values from pins
+	DirInvalid GPIODir = 0xEF // invalid direction is used as error condition
 )
 
+// GPIOSetConfig configures a given pin with a default output value, operation
+// mode, and direction.
+// Returns an error if the receiver is invalid, the pin index is invalid, the
+// current configuration could not be read, or if the new configuration could
+// not be sent.
 func (mcp *MCP2221A) GPIOSetConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) error {
 
 	if ok, err := mcp.valid(); !ok {
@@ -406,6 +445,10 @@ func (mcp *MCP2221A) GPIOSetConfig(pin byte, val byte, mode GPIOMode, dir GPIODi
 	return nil
 }
 
+// GPIOGetConfig reads the current default output value, operation mode, and
+// direction of a given pin.
+// Returns an error if the receiver is invalid, the pin index is invalid, or if
+// the current configuration could not be read.
 func (mcp *MCP2221A) GPIOGetConfig(pin byte) (byte, GPIOMode, GPIODir, error) {
 
 	if ok, err := mcp.valid(); !ok {
@@ -427,6 +470,9 @@ func (mcp *MCP2221A) GPIOGetConfig(pin byte) (byte, GPIOMode, GPIODir, error) {
 
 }
 
+// GPIOSet sets the digital output value for a given pin.
+// Returns an error if the receiver is invalid, the pin index is invalid, or if
+// the pin value could not be set (e.g. pin not configured for GPIO operation).
 func (mcp *MCP2221A) GPIOSet(pin byte, val byte) error {
 
 	if ok, err := mcp.valid(); !ok {
@@ -452,6 +498,9 @@ func (mcp *MCP2221A) GPIOSet(pin byte, val byte) error {
 	return nil
 }
 
+// GPIOGet gets the current digital value of a given pin.
+// Returns an error if the receiver is invalid, the pin index is invalid, or if
+// the pin value could not be set (e.g. pin not configured for GPIO operation).
 func (mcp *MCP2221A) GPIOGet(pin byte) (byte, error) {
 
 	if ok, err := mcp.valid(); !ok {
@@ -484,16 +533,17 @@ func (mcp *MCP2221A) GPIOGet(pin byte) (byte, error) {
 
 // Constants associated with the I²C module.
 const (
-	I2CBaudRate = 100000
-	I2CMinAddr  = 0x08
-	I2CMaxAddr  = 0x77
+	I2CBaudRate = 100000 // default baud rate
+	I2CMinAddr  = 0x08   // minimum possible 7-bit address
+	I2CMaxAddr  = 0x77   // maximum possible (unreserved) 7-bit address
 
 	i2cReadMax  = 60 // maximum number of bytes we can read at a time
 	i2cWriteMax = 60 // maximum number of bytes we can write at a time
 
 	// these constants were copied from Adafruit_Blinka mcp2221.py package. some
 	// aren't listed anywhere in the datasheet, so not sure where they came from.
-
+	// probably with a fancy protocol analyzer, thus my poor ass is going to just
+	// bank on Adafruit doing their homework.
 	i2cStateStartTimeout    byte = 0x12
 	i2cStateRepStartTimeout byte = 0x17
 	i2cStateStopTimeout     byte = 0x62
@@ -514,10 +564,15 @@ const (
 
 	i2cStateReadError byte = 0x7F
 
-	i2cReadRetry  = 50
-	i2cWriteRetry = 50
+	i2cReadRetry  = 50 // maximum number of retries permitted for a single read
+	i2cWriteRetry = 50 // maximum number of retries permitted for a single write
 )
 
+// I2CSetConfig configures the I²C bus clock divider calculated from a given
+// baud rate (BPS). If in doubt, use global constant I2CBaudRate.
+// Returns an error if the receiver is invalid, the given baud rate is invalid,
+// the set-parameters command could not be sent, or if an I²C transfer is
+// currently in-progress.
 func (mcp *MCP2221A) I2CSetConfig(baud uint32) error {
 
 	if ok, err := mcp.valid(); !ok {
@@ -528,6 +583,8 @@ func (mcp *MCP2221A) I2CSetConfig(baud uint32) error {
 		return fmt.Errorf("invalid baud rate: %d", baud)
 	}
 
+	// again, this calculation was shamelessly stolen from Adafruit's Blinka
+	// package as I have no idea how they determined these numbers (wtf @ -3).
 	cmd := makeMsg()
 	cmd[3] = 0x20
 	cmd[4] = byte(ClkHz/baud - 3)
@@ -544,6 +601,10 @@ func (mcp *MCP2221A) I2CSetConfig(baud uint32) error {
 	return nil
 }
 
+// I2CCancel sends a set-parameters command to cancel any ongoing I²C transfer
+// currently in progress.
+// Returns an error if the receiver is invalid, or if the command could not be
+// sent.
 func (mcp *MCP2221A) I2CCancel() error {
 
 	if ok, err := mcp.valid(); !ok {
@@ -565,6 +626,16 @@ func (mcp *MCP2221A) I2CCancel() error {
 	return nil
 }
 
+// I2CWrite is the general-purpose function for writing raw data directly to the
+// I²C data bus. If argument stop is true, then an I²C STOP condition is
+// generated on the bus once the bytes transmitted equals the number bytes
+// specified as parameter cnt (this is the "usual" case). Otherwise, the STOP
+// condition is not generated, and the bus remains "active" for subsequent I/O.
+//
+// Returns an error if any of the following occur: invalid receiver, could not
+// read status message, could not cancel an existing I²C connection (if exists),
+// could not send command message, the I²C state machine enters an unrecoverable
+// state, or too many retries were attempted.
 func (mcp *MCP2221A) I2CWrite(stop bool, addr uint8, out []byte, cnt uint16) error {
 
 	if ok, err := mcp.valid(); !ok {
@@ -629,7 +700,7 @@ func (mcp *MCP2221A) I2CWrite(stop bool, addr uint8, out []byte, cnt uint16) err
 			if rsp, err := mcp.send(cmdID, cmd); nil != err {
 				if nil != rsp {
 					if unrecoverable(rsp[2]) {
-						return fmt.Errorf("send(): unrecoverable I2C write error")
+						return fmt.Errorf("send(): unrecoverable I²C write error")
 					}
 				} else {
 					return fmt.Errorf("send(): %v", err)
@@ -672,7 +743,7 @@ func (mcp *MCP2221A) I2CWrite(stop bool, addr uint8, out []byte, cnt uint16) err
 				break
 			}
 			if unrecoverable(stat.i2cState) {
-				return fmt.Errorf("send(): unrecoverable I2C write error")
+				return fmt.Errorf("send(): unrecoverable I²C write error")
 			}
 			time.Sleep(300 * time.Microsecond)
 		}
@@ -682,6 +753,16 @@ func (mcp *MCP2221A) I2CWrite(stop bool, addr uint8, out []byte, cnt uint16) err
 	return nil
 }
 
+// I2CRead is the general purpose function for performing I²C read operations.
+// If argument rep is true, a REP-START condition is generated (instead of the
+// usual START condition) to indicate we are reading data from an address
+// configured before this call to I2CRead().
+//
+// Returns the data slice of length cnt (bytes) read from the bus if there was
+// no error. Otherwise, an error is returned if any of the following occur:
+// invalid receiver, could not read status message, could not cancel an existing
+// I²C connection (if exists), could not send command message, the I²C state
+// machine enters an unrecoverable state.
 func (mcp *MCP2221A) I2CRead(rep bool, addr uint8, cnt uint16) ([]byte, error) {
 
 	if ok, err := mcp.valid(); !ok {
@@ -776,6 +857,13 @@ func (mcp *MCP2221A) I2CRead(rep bool, addr uint8, cnt uint16) ([]byte, error) {
 	return in, nil
 }
 
+// I2CReadReg performs a standard write-then-read I²C operation as a convenience
+// for the common case of reading registers. This variant is for target devices
+// with 8-bit subaddress widths (i.e. the size of the register pointer).
+// Returns the bytes received on success, or return error if either write or
+// read failures occurred.
+//
+// Also see I2CReadReg16() for 16-bit subaddressing devices.
 func (mcp *MCP2221A) I2CReadReg(addr uint8, reg uint8, cnt uint16) ([]byte, error) {
 
 	if err := mcp.I2CWrite(false, addr, []byte{reg}, 1); nil != err {
@@ -790,6 +878,15 @@ func (mcp *MCP2221A) I2CReadReg(addr uint8, reg uint8, cnt uint16) ([]byte, erro
 
 }
 
+// I2CReadReg16 performs a standard write-then-read I²C operation as a
+// convenience for the common case of reading registers. This variant is for
+// target devices with 16-bit subaddress widths (i.e. the si ze of the register
+// pointer). If argument msb is true, then the buffer containing the register
+// pointer is reversed so that the MSByte is at buffer index 0.
+// Returns the bytes received on success, or return error if either write or
+// read failures occurred.
+//
+// Also see I2CReadReg() for 16-bit subaddressing devices.
 func (mcp *MCP2221A) I2CReadReg16(addr uint8, reg uint16, msb bool, cnt uint16) ([]byte, error) {
 
 	buf := []byte{byte(reg & 0xFF), byte((reg >> 8) & 0xFF)}
@@ -809,6 +906,12 @@ func (mcp *MCP2221A) I2CReadReg16(addr uint8, reg uint16, msb bool, cnt uint16) 
 
 }
 
+// I2CScan scans a given address range and attempts to communicate with each
+// device, ignoring any failures caused by non-existent targets.
+// Returns a byte slicie of 7-bit addresses known to be online and able to be
+// communicated with.
+// Returns a nil slice and error if the receiver is invalid or given address
+// range is invalid.
 func (mcp *MCP2221A) I2CScan(start uint8, stop uint8) ([]uint8, error) {
 
 	if ok, err := mcp.valid(); !ok {

@@ -9,7 +9,7 @@ Datasheet: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http:
 - [x] Supports multiple MCP2221A devices simultaneously
 - [x] Can set all pins to any of their dedicated and alternate function operation modes
 - [x] GPIO input/output
-- [ ] I²C read/write
+- [x] I²C read/write
 - [ ] ADC read
 - [ ] DAC write
 
@@ -23,3 +23,4 @@ go get -u -v github.com/ardnew/mcp2221a
 
 See [examples](examples) for some demo applications:
 - [examples/gpio/main.go](examples/gpio/main.go) - classic "Blink" demo, toggles LED connected to GPIO pin GP0
+- [examples/i2c/main.go](examples/i2c/main.go) - I2C address scanner, and also reads the device ID register from a connected INA260
