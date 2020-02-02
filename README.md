@@ -1,3 +1,8 @@
+[![GoDoc][docimg]][docurl]
+
+[docimg]:      https://godoc.org/github.com/ardnew/mcp2221a?status.svg
+[docurl]:      https://godoc.org/github.com/ardnew/mcp2221a
+
 # mcp2221a
 Go library for the MCP2221A USB to I²C/UART Protocol Converter with GPIO
 
