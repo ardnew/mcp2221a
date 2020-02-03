@@ -19,7 +19,7 @@ Datasheet: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http:
 - [x] DAC write
 - [x] Rising/falling edge interrupt detection
 
-The available operating modes for each pin:
+The available operating modes for each GP pin:
 ```sh
 Mode      | GP0        GP1       GP2      GP3
 --------- + ------- + ------- + ------ + -------
