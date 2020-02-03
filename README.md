@@ -21,14 +21,14 @@ Datasheet: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http:
 
 The available operating modes for each pin:
 ```sh
-Mode      | GP0       GP1       GP2      GP3
----------   --------- --------- -------- --------
+Mode      | GP0        GP1       GP2      GP3
+--------- + ------- + ------- + ------ + -------
 GPIO      | GPIO      GPIO      GPIO     GPIO
 Dedicated | SSPND     CLK OUT   USBCFG   LED_I2C
 Alt 1     | LED URX   ADC1      ADC2     ADC3
 Alt 2     | --        LED UTX   DAC1     DAC2
 Alt 3     | --        IOC       --       --
----------   --------- --------- -------- --------
+--------- + ------- + ------- + ------ + -------
 ```
 
 Note that UART support is provided natively through the USB interface as a CDC device and is not handled by this library. It should show up in your OS as a regular TTY serial interface (`/dev/tty*` on Linux/macOS, COM on Windows).
