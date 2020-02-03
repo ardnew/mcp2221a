@@ -89,8 +89,8 @@ var pinADC = map[byte]byte{1: 0, 2: 1, 3: 2}
 // pin does not have an associated DAC output, the key is not defined.
 var pinDAC = map[byte]byte{2: 0, 3: 1}
 
-// pinInterrupt defines the pin which supports interrupt detection capability.
-var pinInterrupt byte = 1
+// pinIOC defines the pin which supports interrupt detection capability.
+var pinIOC byte = 1
 
 // Constants for all recognized commands (and responses). These are sent as the
 // first word in all command messages, and are echoed back as the first word in
@@ -641,7 +641,47 @@ func (mcp *MCP2221A) ADCSetConfig(pin byte, ref VRef) error {
 	return nil
 }
 
-// ADCRead requests an analog-to-digital conversion reading on the given pin.
+// ADCGetConfig reads the current ADC configuration for the given pin, returning
+// the ADC reference voltage.
+//
+// Returns configured reference voltage and an error if the given pin is not
+// currently configured for ADC operation.
+// Returns VRefDefault reference voltage and an error if the receiver is
+// invalid, pin is invalid, or if the current configuration could not be read.
+func (mcp *MCP2221A) ADCGetConfig(pin byte) (VRef, error) {
+
+	if ok, err := mcp.valid(); !ok {
+		return VRefDefault, err
+	}
+
+	if pin >= GPPinCount {
+		return VRefDefault, fmt.Errorf("invalid GPIO pin: %d", pin)
+	}
+
+	if _, ok := pinADC[pin]; !ok {
+		return VRefDefault, fmt.Errorf("pin does not support ADC: %d", pin)
+	}
+
+	var warn error
+
+	if _, mode, _, err := mcp.GPIOGetConfig(pin); nil != err {
+		return VRefDefault, fmt.Errorf("GPIOGetConfig(): %v", err)
+	} else {
+		if ModeADC != mode {
+			warn = fmt.Errorf("pin not configured for ADC operation: %d", pin)
+		}
+	}
+
+	if buf, err := mcp.config(7, 7); nil != err {
+		return VRefDefault, fmt.Errorf("config(): %v", err)
+	} else {
+		ref := VRef((buf[0] >> 2) & 0x07)
+		return ref, warn
+	}
+}
+
+// ADCRead performs an analog-to-digital conversion reading on the given pin and
+// returns the value.
 //
 // Returns the converted analog value as an unsigned 16-bit integer.
 // Returns an error if the receiver is invalid, VRef is invalid, or if the new
@@ -718,10 +758,52 @@ func (mcp *MCP2221A) DACSetConfig(pin byte, ref VRef) error {
 	return nil
 }
 
-// DACWrite requests and outputs a digital-to-analog conversion using the given
-// value on all DAC-enabled pins.
-// The device only has a single DAC with both pins connected to it, so the value
-// output will be present on both pins if enabled.
+// DACGetConfig reads the current DAC configuration for the given pin, returning
+// the power-up DAC value and reference voltage.
+//
+// Returns configured power-up value, reference voltage, and an error if the
+// given pin is not currently configured for DAC operation.
+// Returns WordClr power-up value, VRefDefault reference voltage, and an error
+// if the receiver is invalid, pin is invalid or is not configured for DAC
+// operation, or if the current configuration could not be read.
+func (mcp *MCP2221A) DACGetConfig(pin byte) (byte, VRef, error) {
+
+	if ok, err := mcp.valid(); !ok {
+		return WordClr, VRefDefault, err
+	}
+
+	if pin >= GPPinCount {
+		return WordClr, VRefDefault, fmt.Errorf("invalid GPIO pin: %d", pin)
+	}
+
+	if _, ok := pinDAC[pin]; !ok {
+		return WordClr, VRefDefault, fmt.Errorf("pin does not support DAC: %d", pin)
+	}
+
+	var warn error
+
+	if _, mode, _, err := mcp.GPIOGetConfig(pin); nil != err {
+		return WordClr, VRefDefault, fmt.Errorf("GPIOGetConfig(): %v", err)
+	} else {
+		if ModeDAC != mode {
+			warn = fmt.Errorf("pin not configured for DAC operation: %d", pin)
+		}
+	}
+
+	if buf, err := mcp.config(6, 6); nil != err {
+		return WordClr, VRefDefault, fmt.Errorf("config(): %v", err)
+	} else {
+		val := (buf[0] & 0x1F) // power-up DAC value (bits 0-4)
+		ref := VRef((buf[0] >> 5) & 0x07)
+		return val, ref, warn
+	}
+}
+
+// DACWrite performs a digital-to-analog conversion and outputs the given value
+// on all DAC-enabled pins.
+// The device only has a single DAC with two pins connected to it, so the value
+// output will be present on both pins if they are both configured for DAC
+// operation.
 //
 // Returns an error if the receiver is invalid or if the converted value could
 // not be sent.
@@ -747,18 +829,27 @@ func (mcp *MCP2221A) DACWrite(val uint16) error {
 // -----------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------
-// -- INTERRUPT ----------------------------------------------------- [start] --
+// -- IOC ----------------------------------------------------------- [start] --
 
-type InterruptEdge byte
+// IOCEdge represents the edge which triggers an interrupt.
+type IOCEdge byte
 
+// Constants associated with the interrupt detection module (IOC).
 const (
-	DisableInterrupt  InterruptEdge = 0x00
-	RisingEdge        InterruptEdge = 0x01
-	FallingEdge       InterruptEdge = 0x02
-	RisingFallingEdge InterruptEdge = 0x03
+	DisableIOC        IOCEdge = 0x00
+	RisingEdge        IOCEdge = 0x01
+	FallingEdge       IOCEdge = 0x02
+	RisingFallingEdge IOCEdge = 0x03
 )
 
-func (mcp *MCP2221A) InterruptSetConfig(edge InterruptEdge) error {
+// IOCSetConfig configures the sole interrupt-capable GPIO pin's operation mode
+// for interrupt detection, sets the edge detection to the given edge, and
+// clears the current interrupt flag.
+//
+// Returns an error if the receiver is invalid, the pin's operation mode could
+// not be set, the edge configuration could not be set, or if the interrupt flag
+// could not be cleared.
+func (mcp *MCP2221A) IOCSetConfig(edge IOCEdge) error {
 
 	if ok, err := mcp.valid(); !ok {
 		return err
@@ -768,7 +859,7 @@ func (mcp *MCP2221A) InterruptSetConfig(edge InterruptEdge) error {
 		return fmt.Errorf("invalid interrupt detection edge: %d", edge)
 	}
 
-	if err := mcp.GPIOSetConfig(pinInterrupt, WordClr, ModeInterrupt, DirInput); nil != err {
+	if err := mcp.GPIOSetConfig(pinIOC, WordClr, ModeInterrupt, DirInput); nil != err {
 		return fmt.Errorf("GPIOSetConfig(): %v", err)
 	}
 
@@ -778,7 +869,7 @@ func (mcp *MCP2221A) InterruptSetConfig(edge InterruptEdge) error {
 	// set detection alter bit (7) and set reference voltage enum
 	cmd[6] = (1 << 7)
 
-	if DisableInterrupt == edge {
+	if DisableIOC == edge {
 		// set only the "clear interrupt detection" bit
 		cmd[6] |= 1
 	} else {
@@ -809,7 +900,38 @@ func (mcp *MCP2221A) InterruptSetConfig(edge InterruptEdge) error {
 	return nil
 }
 
-// -- INTERRUPT ------------------------------------------------------- [end] --
+// IOCGetConfig returns the selected detection edge configured for the interrupt
+// detection module.
+//
+// Returns the configured detection edge and an error if the interrupt GPIO pin
+// is not currently configured for interrupt detection.
+// Returns DisableIOC detection edge and an error if the receiver is invalid or
+// if the current configuration could not be read.
+func (mcp *MCP2221A) IOCGetConfig() (IOCEdge, error) {
+
+	if ok, err := mcp.valid(); !ok {
+		return DisableIOC, err
+	}
+
+	var warn error
+
+	if _, mode, _, err := mcp.GPIOGetConfig(pinIOC); nil != err {
+		return DisableIOC, fmt.Errorf("GPIOGetConfig(): %v", err)
+	} else {
+		if ModeInterrupt != mode {
+			warn = fmt.Errorf("pin not configured for interrupt detection: %d", pinIOC)
+		}
+	}
+
+	if buf, err := mcp.config(7, 7); nil != err {
+		return DisableIOC, fmt.Errorf("config(): %v", err)
+	} else {
+		edge := IOCEdge((buf[0] >> 5) & 0x03)
+		return edge, warn
+	}
+}
+
+// -- IOC ------------------------------------------------------------- [end] --
 // -----------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------
