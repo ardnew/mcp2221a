@@ -8,7 +8,7 @@ Go library for the MCP2221A USB to I²C/UART Protocol Converter with GPIO
 
 Datasheet: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf)
 
-###### Features
+### Features
 - [x] Uses [karalabe/hid](https://github.com/karalabe/hid) for USB HID interface
    - Based on cross-platform [HIDAPI](https://github.com/signal11/hidapi) low-level USB library
 - [x] Supports multiple MCP2221A devices simultaneously
@@ -33,14 +33,14 @@ Alt 3     | --        IOC       --       --
 
 Note that UART support is provided natively through the USB interface as a CDC device and is not handled by this library. It should show up in your OS as a regular TTY serial interface (`/dev/tty*` on Linux/macOS, COM on Windows).
 
-###### Installation
+### Installation
 Use the builtin `go` package manager:
 ```sh
 go get -u -v github.com/ardnew/mcp2221a
 ```
 
 See [examples](examples) for some demo applications:
-- [examples/gpio/main.go](examples/gpio/main.go) - classic "Blink" demo, toggles an LED connected to GPIO pin GP0
-- [examples/i2c/main.go](examples/i2c/main.go) - I2C address scanner, and also reads and prints the "Device ID" register contents from an INA260 power sensor
-- [examples/adc/main.go](examples/adc/main.go) - continuously reads and prints an analog value on GPIO pin GP1
-- [examples/dac/main.go](examples/dac/main.go) - continuously writes and prints an always-incrementing 5-bit value on GPIO pin GP2
+- [GPIO](examples/gpio/main.go) - classic "Blink" demo, toggles an LED connected to GPIO pin GP0
+- [I²C](examples/i2c/main.go) - I²C address scanner, and also reads and prints the "Device ID" register contents from an INA260 power sensor
+- [ADC](examples/adc/main.go) - continuously reads and prints an analog value on GPIO pin GP1
+- [DAC](examples/dac/main.go) - continuously writes and prints an always-incrementing 5-bit value on GPIO pin GP2
