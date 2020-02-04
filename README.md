@@ -21,17 +21,17 @@ Datasheet: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http:
 - [x] Rising/falling edge interrupt detection
 - [x] Save default/power-on configuration to flash memory (GPIO mode/value, DAC output, etc.)
 
-###### GP operating modes
+##### GP operating modes
 The available operating modes for each GP pin:
 ```sh
-Mode      | GP0        GP1       GP2      GP3
---------- + ------- + ------- + ------ + -------
+Mode      | GP0       GP1       GP2      GP3
+--------- + ------- - ------- - ------ - -------
 GPIO      | GPIO      GPIO      GPIO     GPIO
 Dedicated | SSPND     CLK OUT   USBCFG   LED_I2C
 Alt 1     | LED URX   ADC1      ADC2     ADC3
-Alt 2     | --        LED UTX   DAC1     DAC2
-Alt 3     | --        IOC       --       --
---------- + ------- + ------- + ------ + -------
+Alt 2     |           LED UTX   DAC1     DAC2
+Alt 3     |           IOC                  
+--------- + ------- - ------- - ------ - -------
 ```
 
 Note that UART support is provided natively through the USB interface as a CDC device and is not handled by this library. It should show up in your OS as a regular TTY serial interface (`/dev/tty*` on Linux/macOS, COM on Windows).
