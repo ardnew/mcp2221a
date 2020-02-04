@@ -54,10 +54,11 @@ See [examples](examples) for some demo applications:
 - [DAC](examples/dac/main.go) - continuously writes and prints an always-incrementing 5-bit value on GPIO pin GP2
 - [Flash](examples/flash/main.go) - prints the USB product descriptors from flash memory, and toggles power-up GPIO output value on pin GP0
 
-## Where to get one
+## Notes
+#### Where to get one
 Adafruit makes a breakout with a fancy USB-C connector: https://www.adafruit.com/product/4471
 
-### GP operating modes
+#### GP operating modes
 The available operating modes for each GP pin:
 ```sh
 #  Mode      | GP0       GP1       GP2      GP3
