@@ -5,8 +5,6 @@
 // the functions associated with them (ADC, DAC, SRAM, and flash memory).
 //
 // Datasheet: http://ww1.microchip.com/downloads/en/devicedoc/20005565b.pdf
-//
-// USB HID support provided by: https://github.com/karalabe/hid
 package mcp2221a
 
 import (
