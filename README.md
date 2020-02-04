@@ -4,11 +4,9 @@
 [docurl]:https://godoc.org/github.com/ardnew/mcp2221a
 
 # mcp2221a
-Go [module](https://blog.golang.org/using-go-modules) for the MCP2221A USB to I²C/UART Protocol Converter with GPIO
+Go [module](https://blog.golang.org/using-go-modules) for the MCP2221A USB to I²C/UART Protocol Converter with GPIO (**[datasheet](http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf)**)
 
-**Datasheet**: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf)
-
-### Features
+## Features
 - [x] **[Fully-documented API](https://godoc.org/github.com/ardnew/mcp2221a)**
 - [x] Compliant Go module (read more about modules [here](https://blog.golang.org/using-go-modules))
 - [x] Supports multiple MCP2221A devices simultaneously
@@ -24,10 +22,10 @@ Go [module](https://blog.golang.org/using-go-modules) for the MCP2221A USB to I�
 
 Note that **UART support** is provided natively through the USB interface as a CDC device and is not handled by this module. It should show up in your OS as a regular TTY serial interface (`/dev/tty*` on Linux/macOS, COM on Windows).
 
-### Dependencies
+#### Dependencies
 - [github.com/karalabe/hid](https://github.com/karalabe/hid) - USB HID interface
    
-### Installation
+## Installation
 If you are not using Go modules (or are unsure), just use the `go` built-in package manager:
 ```sh
 go get -u -v github.com/ardnew/mcp2221a
@@ -48,7 +46,7 @@ import (
 ```
 The next time you run `go build`, the appropriate package will be downloaded automatically! Gee whiz!
 
-### Examples
+## Examples
 See [examples](examples) for some demo applications:
 - [GPIO](examples/gpio/main.go) - classic "Blink" demo, toggles an LED connected to GPIO pin GP0
 - [I²C](examples/i2c/main.go) - I²C address scanner, and also reads and prints the "Device ID" register contents from an INA260 power sensor
@@ -56,10 +54,10 @@ See [examples](examples) for some demo applications:
 - [DAC](examples/dac/main.go) - continuously writes and prints an always-incrementing 5-bit value on GPIO pin GP2
 - [Flash](examples/flash/main.go) - prints the USB product descriptors from flash memory, and toggles power-up GPIO output value on pin GP0
 
-#### Where to get one
+## Where to get one
 Adafruit makes a breakout with a fancy USB-C connector: https://www.adafruit.com/product/4471
 
-#### GP operating modes
+### GP operating modes
 The available operating modes for each GP pin:
 ```sh
 #  Mode      | GP0       GP1       GP2      GP3
