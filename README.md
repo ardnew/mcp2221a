@@ -9,18 +9,20 @@ Go library for the MCP2221A USB to I²C/UART Protocol Converter with GPIO
 Datasheet: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf)
 
 ### Features
-- [x] [Fully-documented API](https://godoc.org/github.com/ardnew/mcp2221a)!
+- [x] **[Fully-documented API](https://godoc.org/github.com/ardnew/mcp2221a)**
+- [x] Supports multiple MCP2221A devices simultaneously
+- [x] GPIO input/output
+   - All dedicated and alternate functions (see GP operating modes below)
+- [x] I²C read/write (configurable bit rate, up to 400 kHz)
+- [x] ADC read (10-bit, 3 channels/pins), configurable reference voltage
+- [x] DAC write (5-bit, 2 pins, shared output), configurable reference voltage and default output
+- [x] Dedicated UART/I²C activity LED modes with configurable polarity
+- [x] Rising/falling/both edge interrupt detection
+- [x] Clock output on 1 pin (up to 12 MHz)
+- [x] Save default/power-on configuration to flash memory (GPIO mode/value, DAC output, etc.)
 - [x] Uses [karalabe/hid](https://github.com/karalabe/hid) for USB HID interface
    - Based on cross-platform [HIDAPI](https://github.com/signal11/hidapi) low-level USB library
-- [x] Supports multiple MCP2221A devices simultaneously
-- [x] Can set all GP pins to any of their dedicated and alternate function operating modes (see below)
-- [x] GPIO input/output
-- [x] I²C read/write
-- [x] ADC read
-- [x] DAC write
-- [x] Rising/falling edge interrupt detection
-- [x] Save default/power-on configuration to flash memory (GPIO mode/value, DAC output, etc.)
-
+   
 ##### GP operating modes
 The available operating modes for each GP pin:
 ```sh
