@@ -9,6 +9,7 @@ Go library for the MCP2221A USB to I²C/UART Protocol Converter with GPIO
 Datasheet: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf)
 
 ### Features
+- [x] [Fully-documented API](https://godoc.org/github.com/ardnew/mcp2221a)!
 - [x] Uses [karalabe/hid](https://github.com/karalabe/hid) for USB HID interface
    - Based on cross-platform [HIDAPI](https://github.com/signal11/hidapi) low-level USB library
 - [x] Supports multiple MCP2221A devices simultaneously
