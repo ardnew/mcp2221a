@@ -20,6 +20,7 @@ Datasheet: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http:
 - [x] Rising/falling edge interrupt detection
 - [x] Save default/power-on configuration to flash memory (GPIO mode/value, DAC output, etc.)
 
+###### GP operating modes
 The available operating modes for each GP pin:
 ```sh
 Mode      | GP0        GP1       GP2      GP3
