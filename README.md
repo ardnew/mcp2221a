@@ -46,7 +46,7 @@ import (
 	mcp "github.com/ardnew/mcp2221a"
 )
 ```
-The next time your run `go build` locally on your module, the appropriate package will be downloaded automatically! Gee whiz!
+The next time you run `go build`, the appropriate package will be downloaded automatically! Gee whiz!
 
 ### Examples
 See [examples](examples) for some demo applications:
