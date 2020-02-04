@@ -50,3 +50,7 @@ See [examples](examples) for some demo applications:
 - [ADC](examples/adc/main.go) - continuously reads and prints an analog value on GPIO pin GP1
 - [DAC](examples/dac/main.go) - continuously writes and prints an always-incrementing 5-bit value on GPIO pin GP2
 - [Flash](examples/flash/main.go) - prints the USB product descriptors from flash memory, and toggles power-up GPIO output value on pin GP0
+
+#### Where to get one
+
+Adafruit makes a breakout with a fancy USB-C connector: https://www.adafruit.com/product/4471
