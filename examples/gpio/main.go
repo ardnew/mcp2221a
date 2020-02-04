@@ -15,6 +15,8 @@ func main() {
 	}
 	defer m.Close()
 
+	log.Print(mcp.PackageVersion())
+
 	// reset device to default settings stored in flash memory
 	if err := m.Reset(5 * time.Second); nil != err {
 		log.Fatalf("Reset(): %v", err)

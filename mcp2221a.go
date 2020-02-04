@@ -17,6 +17,24 @@ import (
 	usb "github.com/karalabe/hid"
 )
 
+// Constants associated with package version.
+const (
+	VersionPkg = "mcp2221a"
+	VersionMaj = 1
+	VersionMin = 1
+	VersionPch = 0
+)
+
+// Version returns the SemVer-compatible version string of this package.
+func Version() string {
+	return fmt.Sprintf("%d.%d.%d", VersionMaj, VersionMin, VersionPch)
+}
+
+// PackageVersion returns the descriptive version string of this package.
+func PackageVersion() string {
+	return fmt.Sprintf("%s v%s", VersionPkg, Version())
+}
+
 // VID and PID are the official vendor and product identifiers assigned by the
 // USB-IF.
 const (
