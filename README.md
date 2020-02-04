@@ -18,6 +18,7 @@ Datasheet: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http:
 - [x] ADC read
 - [x] DAC write
 - [x] Rising/falling edge interrupt detection
+- [x] Save default/power-on configuration to flash memory (GPIO mode/value, DAC output, etc.)
 
 The available operating modes for each GP pin:
 ```sh
@@ -44,3 +45,4 @@ See [examples](examples) for some demo applications:
 - [I²C](examples/i2c/main.go) - I²C address scanner, and also reads and prints the "Device ID" register contents from an INA260 power sensor
 - [ADC](examples/adc/main.go) - continuously reads and prints an analog value on GPIO pin GP1
 - [DAC](examples/dac/main.go) - continuously writes and prints an always-incrementing 5-bit value on GPIO pin GP2
+- [Flash](examples/flash/main.go) - prints the USB product descriptors from flash memory, and toggles power-up GPIO output value on pin GP0

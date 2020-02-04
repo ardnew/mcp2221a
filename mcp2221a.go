@@ -344,11 +344,11 @@ type status struct {
 	adcChan    []uint16
 }
 
-// newStatus parses the response message of a status command.
+// statusParse parses the response message of the status command.
 //
 // Returns a pointer to a newly-created status object on success, or nil if the
 // given response message is nil or has inadequate length.
-func newStatus(msg []byte) *status {
+func statusParse(msg []byte) *status {
 	if nil == msg || len(msg) < MsgSz {
 		return nil
 	}
@@ -399,7 +399,7 @@ func (mcp *MCP2221A) status() (*status, error) {
 	if rsp, err := mcp.send(cmdStatus, cmd); nil != err {
 		return nil, fmt.Errorf("send(): %v", err)
 	} else {
-		return newStatus(rsp), nil
+		return statusParse(rsp), nil
 	}
 }
 
@@ -409,10 +409,24 @@ func (mcp *MCP2221A) status() (*status, error) {
 // -----------------------------------------------------------------------------
 // -- FLASH --------------------------------------------------------- [start] --
 
+// Constants related to the flash memory module.
+const (
+	subcmdChipSettings byte = 0x00
+	subcmdGPSettings   byte = 0x01
+	subcmdUSBMfgDesc   byte = 0x02
+	subcmdUSBProdDesc  byte = 0x03
+	subcmdUSBSerialNo  byte = 0x04
+	subcmdSerialNo     byte = 0x05
+)
+
+// Polarity represents the digital state of certain pins/bits in the flash
+// settings struct.
 type Polarity bool
 
+// ChipSecurity holds one of the enumerated security configuration constants.
 type ChipSecurity byte
 
+// Constants related to ChipSecurity.
 const (
 	SecUnsecured ChipSecurity = 0x00
 	SecPassword  ChipSecurity = 0x01
@@ -420,6 +434,10 @@ const (
 	SecLocked2   ChipSecurity = 0x11 // equivalent to SecLocked1
 )
 
+// chipSettings contains the "chip settings" (subcommand 0x00) configuration
+// stored in flash memory. the members are conveniently typed for general usage.
+// Obtain a new instance containing the actual current data stored in flash by
+// calling chipSettingsParse() with the return from flashGetChipSettings().
 type chipSettings struct {
 	cdcSerialNoEnumEnable bool
 	ledUARTRxPol          Polarity
@@ -439,15 +457,34 @@ type chipSettings struct {
 	usbReqCurrent         byte
 }
 
-// Constants related to the flash memory module.
-const (
-	subcmdChipSettings byte = 0x00
-	subcmdGPSettings   byte = 0x01
-	subcmdUSBMfgDesc   byte = 0x02
-	subcmdUSBProdDesc  byte = 0x03
-	subcmdUSBSerialNo  byte = 0x04
-	subcmdSerialNo     byte = 0x05
-)
+// chipSettingsParse parses the response message from the chip settings
+// subcommand of the flash read command.
+//
+// Returns a pointer to a newly-created chipSettings object on success, or nil
+// if the given response message is nil or has inadequate length.
+func chipSettingsParse(msg []byte) *chipSettings {
+	if nil == msg || len(msg) < MsgSz {
+		return nil
+	}
+	return &chipSettings{
+		cdcSerialNoEnumEnable: 0x01 == ((msg[4] >> 7) & 0x01),
+		ledUARTRxPol:          Polarity(0x01 == ((msg[4] >> 6) & 0x01)),
+		ledUARTTxPol:          Polarity(0x01 == ((msg[4] >> 5) & 0x01)),
+		ledI2CPol:             Polarity(0x01 == ((msg[4] >> 4) & 0x01)),
+		sspndPol:              Polarity(0x01 == ((msg[4] >> 3) & 0x01)),
+		usbcfgPol:             Polarity(0x01 == ((msg[4] >> 2) & 0x01)),
+		chipSecurity:          ChipSecurity(msg[4] & 0x03),
+		clkOutDiv:             msg[5] & 0x0F,
+		dacVRef:               VRef((msg[6] >> 5) & 0x03),
+		dacOutput:             msg[6] & 0x0F,
+		iocEdge:               IOCEdge((msg[7] >> 5) & 0x03),
+		adcVRef:               VRef((msg[7] >> 2) & 0x03),
+		usbVID:                (uint16(msg[9]) << 8) | uint16(msg[8]),
+		usbPID:                (uint16(msg[11]) << 8) | uint16(msg[10]),
+		usbPowerAttr:          msg[12],
+		usbReqCurrent:         msg[13],
+	}
+}
 
 // flashRead reads the settings associated with the given subcommand sub from
 // flash memory and returns the response message.
@@ -489,17 +526,27 @@ func (mcp *MCP2221A) flashWrite(sub byte, data []byte) error {
 		return fmt.Errorf("invalid subcommand: %d", sub)
 	}
 
-	cmd := makeMsg()
-	cmd[1] = sub
+	data[1] = sub
 
-	if _, err := mcp.send(cmdFlashWrite, cmd); nil != err {
+	if _, err := mcp.send(cmdFlashWrite, data); nil != err {
 		return fmt.Errorf("send(): %v", err)
+	}
+
+	if rsp, err := mcp.flashRead(subcmdGPSettings); nil != err {
+		logMsg(rsp)
 	}
 
 	return nil
 }
 
-func (mcp *MCP2221A) flashGetChipSettings() (*chipSettings, error) {
+// flashGetChipSettings reads the current chip settings stored in flash memory
+// and returns the byte slice from its response message.
+// These settings do not necessarily reflect the current device configuration,
+// which are stored in SRAM (see: sramGet()).
+//
+// Returns nil with an error if the receiver is invalid or could not read from
+// flash memory.
+func (mcp *MCP2221A) flashGetChipSettings() ([]byte, error) {
 
 	if ok, err := mcp.valid(); !ok {
 		return nil, err
@@ -508,27 +555,20 @@ func (mcp *MCP2221A) flashGetChipSettings() (*chipSettings, error) {
 	if rsp, err := mcp.flashRead(subcmdChipSettings); nil != err {
 		return nil, fmt.Errorf("flashRead(): %v", err)
 	} else {
-		return &chipSettings{
-			cdcSerialNoEnumEnable: 0x01 == ((rsp[4] >> 7) & 0x01),
-			ledUARTRxPol:          Polarity(0x01 == ((rsp[4] >> 6) & 0x01)),
-			ledUARTTxPol:          Polarity(0x01 == ((rsp[4] >> 5) & 0x01)),
-			ledI2CPol:             Polarity(0x01 == ((rsp[4] >> 4) & 0x01)),
-			sspndPol:              Polarity(0x01 == ((rsp[4] >> 3) & 0x01)),
-			usbcfgPol:             Polarity(0x01 == ((rsp[4] >> 2) & 0x01)),
-			chipSecurity:          ChipSecurity(rsp[4] & 0x03),
-			clkOutDiv:             rsp[5] & 0x0F,
-			dacVRef:               VRef((rsp[6] >> 5) & 0x03),
-			dacOutput:             rsp[6] & 0x0F,
-			iocEdge:               IOCEdge((rsp[7] >> 5) & 0x03),
-			adcVRef:               VRef((rsp[7] >> 2) & 0x03),
-			usbVID:                (uint16(rsp[9]) << 8) | uint16(rsp[8]),
-			usbPID:                (uint16(rsp[11]) << 8) | uint16(rsp[10]),
-			usbPowerAttr:          rsp[12],
-			usbReqCurrent:         rsp[13],
-		}, nil
+		return rsp, nil
 	}
 }
 
+// flashGetGPSettings reads the current GP settings (containing the
+// configuration of all GPIO pins) from flash memory and returns a slice of
+// bytes from the response containing each pin's configuration.
+// The returned slice will always be the same length (4), and each pin's
+// configuration is stored at its respective index (i.e. pin 2 will be at [2]).
+// These settings do not necessarily reflect the current device configuration,
+// which are stored in SRAM (see: sramGet()).
+//
+// Returns nil with an error if the receiver is invalid or could not read from
+// flash memory.
 func (mcp *MCP2221A) flashGetGPSettings() ([]byte, error) {
 
 	if ok, err := mcp.valid(); !ok {
@@ -542,6 +582,35 @@ func (mcp *MCP2221A) flashGetGPSettings() ([]byte, error) {
 	}
 }
 
+// flashParseString parses a UTF-16-encoded string stored in the response
+// messages of flash read commands (0xB0).
+func flashParseString(b []byte) string {
+
+	// 16-bit unicode (2 bytes per rune), starting at byte 4
+	const max byte = (MsgSz - 4) / 2
+
+	n := (b[2] - 2) / 2 // length stored at byte 2
+
+	switch {
+	case n == 0: // no UTF symbols
+		return ""
+	case n > max: // buffer overrun
+		n = max
+	}
+
+	p := []uint16{}
+	for i := byte(0); i < n; i++ {
+		p = append(p, (uint16(b[4+2*i+1])<<8)|uint16(b[4+2*i]))
+	}
+
+	return string(utf16.Decode(p))
+}
+
+// FlashGetUSBManufacturer reads the current USB manufacturer description from
+// flash memory and returns it as a string.
+//
+// Returns an empty string and error if the receiver is invalid or if the flash
+// configuration could not be read.
 func (mcp *MCP2221A) FlashGetUSBManufacturer() (string, error) {
 
 	if ok, err := mcp.valid(); !ok {
@@ -551,15 +620,15 @@ func (mcp *MCP2221A) FlashGetUSBManufacturer() (string, error) {
 	if rsp, err := mcp.flashRead(subcmdUSBMfgDesc); nil != err {
 		return "", fmt.Errorf("flashRead(): %v", err)
 	} else {
-		cnt := rsp[2] - 2
-		pt := []uint16{}
-		for i := byte(0); i < cnt/2; i++ {
-			pt = append(pt, (uint16(rsp[4+2*i+1])<<8)|uint16(rsp[4+2*i]))
-		}
-		return string(utf16.Decode(pt)), nil
+		return flashParseString(rsp), nil
 	}
 }
 
+// FlashGetUSBProduct reads the current USB product description from flash
+// memory and returns it as a string.
+//
+// Returns an empty string and error if the receiver is invalid or if the flash
+// configuration could not be read.
 func (mcp *MCP2221A) FlashGetUSBProduct() (string, error) {
 
 	if ok, err := mcp.valid(); !ok {
@@ -569,15 +638,15 @@ func (mcp *MCP2221A) FlashGetUSBProduct() (string, error) {
 	if rsp, err := mcp.flashRead(subcmdUSBProdDesc); nil != err {
 		return "", fmt.Errorf("flashRead(): %v", err)
 	} else {
-		cnt := rsp[2] - 2
-		pt := []uint16{}
-		for i := byte(0); i < cnt/2; i++ {
-			pt = append(pt, (uint16(rsp[4+2*i+1])<<8)|uint16(rsp[4+2*i]))
-		}
-		return string(utf16.Decode(pt)), nil
+		return flashParseString(rsp), nil
 	}
 }
 
+// FlashGetUSBSerialNo reads the current USB serial number from flash memory and
+// returns it as a string.
+//
+// Returns an empty string and error if the receiver is invalid or if the flash
+// configuration could not be read.
 func (mcp *MCP2221A) FlashGetUSBSerialNo() (string, error) {
 
 	if ok, err := mcp.valid(); !ok {
@@ -587,15 +656,15 @@ func (mcp *MCP2221A) FlashGetUSBSerialNo() (string, error) {
 	if rsp, err := mcp.flashRead(subcmdUSBSerialNo); nil != err {
 		return "", fmt.Errorf("flashRead(): %v", err)
 	} else {
-		cnt := rsp[2] - 2
-		pt := []uint16{}
-		for i := byte(0); i < cnt/2; i++ {
-			pt = append(pt, (uint16(rsp[4+2*i+1])<<8)|uint16(rsp[4+2*i]))
-		}
-		return string(utf16.Decode(pt)), nil
+		return flashParseString(rsp), nil
 	}
 }
 
+// FlashGetFactorySerialNo reads the factory (read-only) serial number from
+// flash memory and returns it as a string.
+//
+// Returns an empty string and error if the receiver is invalid or if the flash
+// configuration could not be read.
 func (mcp *MCP2221A) FlashGetFactorySerialNo() (string, error) {
 
 	if ok, err := mcp.valid(); !ok {
@@ -606,6 +675,9 @@ func (mcp *MCP2221A) FlashGetFactorySerialNo() (string, error) {
 		return "", fmt.Errorf("flashRead(): %v", err)
 	} else {
 		cnt := rsp[2] - 2
+		if cnt > MsgSz-4 {
+			cnt = MsgSz - 4
+		}
 		return string(rsp[4 : 4+cnt]), nil
 	}
 }
@@ -618,6 +690,8 @@ func (mcp *MCP2221A) FlashGetFactorySerialNo() (string, error) {
 
 // sramGet sends a command requesting current SRAM configuration and returns a
 // byte slice within the given interval from the response message.
+// These settings do not necessarily reflect the default device configuration,
+// which is stored in flash memory (see: flashRead() and flashGet_*_()).
 //
 // Returns a nil slice and error if the receiver is invalid, the given range is
 // invalid, or if the configuration command could not be sent.
@@ -674,6 +748,8 @@ const (
 
 // GPIOSetConfig configures a given pin with a default output value, operation
 // mode, and direction.
+// These settings only affect the current device configuration and are not
+// retained after next startup/reset (see: GPIOFlashConfig()).
 //
 // Returns an error if the receiver is invalid, the pin index is invalid, the
 // current configuration could not be read, or if the new configuration could
@@ -696,10 +772,7 @@ func (mcp *MCP2221A) GPIOSetConfig(pin byte, val byte, mode GPIOMode, dir GPIODi
 		// copy the current GPIO settings because they will -all- be set with the
 		// command request
 		cmd[7] = WordSet // alter GP designation
-		cmd[8] = cur[0]
-		cmd[9] = cur[1]
-		cmd[10] = cur[2]
-		cmd[11] = cur[3]
+		copy(cmd[8:], cur)
 	}
 
 	// and then update our selected pin as desired
@@ -707,6 +780,44 @@ func (mcp *MCP2221A) GPIOSetConfig(pin byte, val byte, mode GPIOMode, dir GPIODi
 
 	if _, err := mcp.send(cmdSRAMSet, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
+	}
+
+	return nil
+}
+
+// GPIOFlashConfig configures a given pin with a default output value, operation
+// mode, direction, and then writes that configuration to flash memory.
+// These settings become default and are retained after next startup/reset.
+//
+// Returns an error if the receiver is invalid, the pin index is invalid, the
+// current configuration could not be read, or if the new configuration could
+// not be sent.
+func (mcp *MCP2221A) GPIOFlashConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) error {
+
+	if ok, err := mcp.valid(); !ok {
+		return err
+	}
+
+	if pin >= GPPinCount {
+		return fmt.Errorf("invalid GPIO pin: %d", pin)
+	}
+
+	if err := mcp.GPIOSetConfig(pin, val, mode, dir); nil != err {
+		return fmt.Errorf("GPIOSetConfig(): %v", err)
+	}
+
+	cmd := makeMsg()
+
+	if cur, err := mcp.flashGetGPSettings(); nil != err {
+		return fmt.Errorf("flashGetGPSettings(): %v", err)
+	} else {
+		copy(cmd[2:], cur)
+	}
+
+	cmd[2+pin] = (val << 4) | (byte(dir) << 3) | byte(mode)
+
+	if err := mcp.flashWrite(subcmdGPSettings, cmd); nil != err {
+		return fmt.Errorf("flashWrite(): %v", err)
 	}
 
 	return nil
@@ -801,6 +912,8 @@ func (mcp *MCP2221A) GPIOGet(pin byte) (byte, error) {
 
 // ADCSetConfig configures the analog-to-digital converter by setting the given
 // pin's operation mode to ADC and the ADC reference voltage to ref.
+// These settings only affect the current device configuration and are not
+// retained after next startup/reset (see: GPIOFlashConfig()).
 //
 // Returns an error if the receiver is invalid, pin does not have an associated
 // ADC channel, ref is invalid, or if the new configuration could not be sent.
@@ -833,6 +946,49 @@ func (mcp *MCP2221A) ADCSetConfig(pin byte, ref VRef) error {
 
 	if _, err := mcp.send(cmdSRAMSet, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
+	}
+
+	return nil
+}
+
+// ADCFlashConfig configures the analog-to-digital converter by setting the
+// given pin's operation mode to ADC, the ADC reference voltage to ref, and then
+// writes these settings to flash memory.
+// These settings become default and are retained after next startup/reset.
+//
+// Returns an error if the receiver is invalid, pin does not have an associated
+// ADC channel, ref is invalid, or if the new configuration could not be sent.
+func (mcp *MCP2221A) ADCFlashConfig(pin byte, ref VRef) error {
+
+	if ok, err := mcp.valid(); !ok {
+		return err
+	}
+
+	if pin >= GPPinCount {
+		return fmt.Errorf("invalid GPIO pin: %d", pin)
+	}
+
+	if _, ok := pinADC[pin]; !ok {
+		return fmt.Errorf("pin does not support ADC: %d", pin)
+	}
+
+	if !isVRefValid(ref) {
+		return fmt.Errorf("invalid reference voltage: %d", ref)
+	}
+
+	if err := mcp.GPIOFlashConfig(pin, WordClr, ModeADC, DirInput); nil != err {
+		return fmt.Errorf("GPIOFlashConfig(): %v", err)
+	}
+
+	if rsp, err := mcp.flashGetChipSettings(); nil != err {
+		return fmt.Errorf("flashGetChipSettings(): %v", err)
+	} else {
+		rsp[5] &= ^byte(0x07 << 2) // mask off the VRef bits (2-4)
+		rsp[5] |= (byte(ref) << 2)
+
+		if err := mcp.flashWrite(subcmdChipSettings, rsp); nil != err {
+			return fmt.Errorf("flashWrite(): %v", err)
+		}
 	}
 
 	return nil
@@ -905,6 +1061,8 @@ func (mcp *MCP2221A) ADCRead(pin byte) (uint16, error) {
 
 // DACSetConfig configures the digital-to-analog converter by setting the given
 // pin's operation mode to DAC and the DAC reference voltage to ref.
+// These settings only affect the current device configuration and are not
+// retained after next startup/reset (see: GPIOFlashConfig()).
 //
 // Returns an error if the receiver is invalid, pin does not have an associated
 // DAC output, ref is invalid, or if the new configuration could not be sent.
@@ -937,6 +1095,49 @@ func (mcp *MCP2221A) DACSetConfig(pin byte, ref VRef) error {
 
 	if _, err := mcp.send(cmdSRAMSet, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
+	}
+
+	return nil
+}
+
+// DACFlashConfig configures the digital-to-analog converter by setting the
+// given pin's operation mode to DAC, the DAC reference voltage to ref, the
+// default startup output value to val, and then writes these settings to flash
+// memory.
+// These settings become default and are retained after next startup/reset.
+//
+// Returns an error if the receiver is invalid, pin does not have an associated
+// DAC output, ref is invalid, or if the new configuration could not be sent.
+func (mcp *MCP2221A) DACFlashConfig(pin byte, ref VRef, val byte) error {
+
+	if ok, err := mcp.valid(); !ok {
+		return err
+	}
+
+	if pin >= GPPinCount {
+		return fmt.Errorf("invalid GPIO pin: %d", pin)
+	}
+
+	if _, ok := pinDAC[pin]; !ok {
+		return fmt.Errorf("pin does not support DAC: %d", pin)
+	}
+
+	if !isVRefValid(ref) {
+		return fmt.Errorf("invalid reference voltage: %d", ref)
+	}
+
+	if err := mcp.GPIOFlashConfig(pin, WordClr, ModeDAC, DirOutput); nil != err {
+		return fmt.Errorf("GPIOFlashConfig(): %v", err)
+	}
+
+	if rsp, err := mcp.flashGetChipSettings(); nil != err {
+		return fmt.Errorf("flashGetChipSettings(): %v", err)
+	} else {
+		rsp[4] = (byte(ref) << 5) | (val & 0x1F)
+
+		if err := mcp.flashWrite(subcmdChipSettings, rsp); nil != err {
+			return fmt.Errorf("flashWrite(): %v", err)
+		}
 	}
 
 	return nil
@@ -1014,6 +1215,8 @@ const (
 // IOCSetConfig configures the sole interrupt-capable GPIO pin's operation mode
 // for interrupt detection, sets the edge detection to the given edge, and
 // clears the current interrupt flag.
+// These settings only affect the current device configuration and are not
+// retained after next startup/reset (see: GPIOFlashConfig()).
 //
 // Returns an error if the receiver is invalid, the pin's operation mode could
 // not be set, the edge configuration could not be set, or if the interrupt flag
@@ -1064,6 +1267,43 @@ func (mcp *MCP2221A) IOCSetConfig(edge IOCEdge) error {
 
 	if _, err := mcp.send(cmdSetParams, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
+	}
+
+	return nil
+}
+
+// IOCFlashConfig configures the sole interrupt-capable GPIO pin's operation
+// mode for interrupt detection, sets the edge detection to the given edge,
+// and then writes these settings to flash memory.
+// Note the interrupt flag is not cleared as it is with IOCSetConfig().
+// These settings become default and are retained after next startup/reset.
+//
+// Returns an error if the receiver is invalid, the pin's operation mode could
+// not be set, the edge configuration could not be set, or if the interrupt flag
+// could not be cleared.
+func (mcp *MCP2221A) IOCFlashConfig(edge IOCEdge) error {
+
+	if ok, err := mcp.valid(); !ok {
+		return err
+	}
+
+	if edge > RisingFallingEdge {
+		return fmt.Errorf("invalid interrupt detection edge: %d", edge)
+	}
+
+	if err := mcp.GPIOFlashConfig(pinIOC, WordClr, ModeInterrupt, DirInput); nil != err {
+		return fmt.Errorf("GPIOFlashConfig(): %v", err)
+	}
+
+	if rsp, err := mcp.flashGetChipSettings(); nil != err {
+		return fmt.Errorf("flashGetChipSettings(): %v", err)
+	} else {
+		rsp[5] &= ^byte(0x03 << 5) // mask off the edge bits (5-6)
+		rsp[5] |= (byte(edge) << 5)
+
+		if err := mcp.flashWrite(subcmdChipSettings, rsp); nil != err {
+			return fmt.Errorf("flashWrite(): %v", err)
+		}
 	}
 
 	return nil
@@ -1155,6 +1395,8 @@ func i2cStateTimeout(state byte) bool {
 
 // I2CSetConfig configures the I²C bus clock divider calculated from a given
 // baud rate (BPS). If in doubt, use global constant I2CBaudRate.
+// These settings only affect the current device configuration and are not
+// retained after next startup/reset (see: GPIOFlashConfig()).
 //
 // Returns an error if the receiver is invalid, the given baud rate is invalid,
 // the set-parameters command could not be sent, or if an I²C transfer is
@@ -1178,7 +1420,7 @@ func (mcp *MCP2221A) I2CSetConfig(baud uint32) error {
 	if rsp, err := mcp.send(cmdSetParams, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
 	} else {
-		stat := newStatus(rsp)
+		stat := statusParse(rsp)
 		if 0x21 == stat.i2cSpdChg {
 			return fmt.Errorf("transfer in progress")
 		}
@@ -1204,7 +1446,7 @@ func (mcp *MCP2221A) I2CCancel() error {
 	if rsp, err := mcp.send(cmdSetParams, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
 	} else {
-		stat := newStatus(rsp)
+		stat := statusParse(rsp)
 		if 0x10 == stat.i2cCancel {
 			time.Sleep(300 * time.Microsecond)
 		}
