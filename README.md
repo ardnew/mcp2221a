@@ -6,14 +6,14 @@
 # mcp2221a
 Go [module](https://blog.golang.org/using-go-modules) for the MCP2221A USB to I²C/UART Protocol Converter with GPIO
 
-Datasheet: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf)
+**Datasheet**: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf)
 
 ### Features
 - [x] **[Fully-documented API](https://godoc.org/github.com/ardnew/mcp2221a)**
 - [x] Compliant Go module (read more about modules [here](https://blog.golang.org/using-go-modules))
 - [x] Supports multiple MCP2221A devices simultaneously
 - [x] GPIO input/output
-   - All dedicated and alternate functions (see GP operating modes below)
+   - All dedicated and alternate functions (see: [GP operating modes](#gp-operating-modes))
 - [x] I²C read/write (configurable bit rate, up to 400 kHz)
 - [x] ADC read (10-bit, 3 channels/pins), configurable reference voltage
 - [x] DAC write (5-bit, 2 pins, shared output), configurable reference voltage and default output
@@ -22,32 +22,19 @@ Datasheet: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http:
 - [x] Clock output on 1 pin (up to 12 MHz)
 - [x] Save default/power-on configuration to flash memory (GPIO mode/value, DAC output, etc.)
 
+Note that **UART support** is provided natively through the USB interface as a CDC device and is not handled by this module. It should show up in your OS as a regular TTY serial interface (`/dev/tty*` on Linux/macOS, COM on Windows).
+
 ### Dependencies
 - [github.com/karalabe/hid](https://github.com/karalabe/hid) - USB HID interface
    
-##### GP operating modes
-The available operating modes for each GP pin:
-```sh
-#  Mode      | GP0       GP1       GP2      GP3
-#  --------- + ------- - ------- - ------ - -------
-#  GPIO      | GPIO      GPIO      GPIO     GPIO
-#  Dedicated | SSPND     CLK OUT   USBCFG   LED_I2C
-#  Alt 1     | LED URX   ADC1      ADC2     ADC3
-#  Alt 2     |           LED UTX   DAC1     DAC2
-#  Alt 3     |           IOC                  
-#  --------- + ------- - ------- - ------ - -------
-```
-
-Note that UART support is provided natively through the USB interface as a CDC device and is not handled by this module. It should show up in your OS as a regular TTY serial interface (`/dev/tty*` on Linux/macOS, COM on Windows).
-
 ### Installation
 If you are not using Go modules (or are unsure), just use the `go` built-in package manager:
 ```sh
 go get -u -v github.com/ardnew/mcp2221a
 ```
 
-###### Module
-Alternatively, you are using Go modules, either use the built-in package manager (and drop the `-u`):
+#### Installation using modules
+Either use the built-in package manager as above (and drop the `-u`):
 ```sh
 go get -v github.com/ardnew/mcp2221a
 ```
@@ -71,3 +58,17 @@ See [examples](examples) for some demo applications:
 
 #### Where to get one
 Adafruit makes a breakout with a fancy USB-C connector: https://www.adafruit.com/product/4471
+
+#### GP operating modes
+The available operating modes for each GP pin:
+```sh
+#  Mode      | GP0       GP1       GP2      GP3
+#  --------- + ------- - ------- - ------ - -------
+#  GPIO      | GPIO      GPIO      GPIO     GPIO
+#  Dedicated | SSPND     CLK OUT   USBCFG   LED_I2C
+#  Alt 1     | LED URX   ADC1      ADC2     ADC3
+#  Alt 2     |           LED UTX   DAC1     DAC2
+#  Alt 3     |           IOC                  
+#  --------- + ------- - ------- - ------ - -------
+```
+
