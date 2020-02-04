@@ -4,7 +4,7 @@
 [docurl]:      https://godoc.org/github.com/ardnew/mcp2221a
 
 # mcp2221a
-Go library for the MCP2221A USB to I²C/UART Protocol Converter with GPIO
+Go module for the MCP2221A USB to I²C/UART Protocol Converter with GPIO
 
 Datasheet: [http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf)
 
