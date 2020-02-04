@@ -913,7 +913,7 @@ func (mcp *MCP2221A) GPIOGet(pin byte) (byte, error) {
 // ADCSetConfig configures the analog-to-digital converter by setting the given
 // pin's operation mode to ADC and the ADC reference voltage to ref.
 // These settings only affect the current device configuration and are not
-// retained after next startup/reset (see: GPIOFlashConfig()).
+// retained after next startup/reset (see: ADCFlashConfig()).
 //
 // Returns an error if the receiver is invalid, pin does not have an associated
 // ADC channel, ref is invalid, or if the new configuration could not be sent.
@@ -1062,7 +1062,7 @@ func (mcp *MCP2221A) ADCRead(pin byte) (uint16, error) {
 // DACSetConfig configures the digital-to-analog converter by setting the given
 // pin's operation mode to DAC and the DAC reference voltage to ref.
 // These settings only affect the current device configuration and are not
-// retained after next startup/reset (see: GPIOFlashConfig()).
+// retained after next startup/reset (see: DACFlashConfig()).
 //
 // Returns an error if the receiver is invalid, pin does not have an associated
 // DAC output, ref is invalid, or if the new configuration could not be sent.
@@ -1216,7 +1216,7 @@ const (
 // for interrupt detection, sets the edge detection to the given edge, and
 // clears the current interrupt flag.
 // These settings only affect the current device configuration and are not
-// retained after next startup/reset (see: GPIOFlashConfig()).
+// retained after next startup/reset (see: IOCFlashConfig()).
 //
 // Returns an error if the receiver is invalid, the pin's operation mode could
 // not be set, the edge configuration could not be set, or if the interrupt flag
@@ -1396,7 +1396,7 @@ func i2cStateTimeout(state byte) bool {
 // I2CSetConfig configures the I²C bus clock divider calculated from a given
 // baud rate (BPS). If in doubt, use global constant I2CBaudRate.
 // These settings only affect the current device configuration and are not
-// retained after next startup/reset (see: GPIOFlashConfig()).
+// retained after next startup/reset.
 //
 // Returns an error if the receiver is invalid, the given baud rate is invalid,
 // the set-parameters command could not be sent, or if an I²C transfer is
