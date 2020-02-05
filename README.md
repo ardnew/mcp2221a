@@ -40,8 +40,8 @@ go get -v github.com/ardnew/mcp2221a
 Or simply add the import statement to your Go package's source code:
 ```go
 import (
-	// ... other imports ...
-	mcp "github.com/ardnew/mcp2221a"
+  // ... other imports ...
+  mcp "github.com/ardnew/mcp2221a"
 )
 ```
 The next time you run `go build`, the appropriate package will be downloaded automatically! Gee whiz!
@@ -80,15 +80,16 @@ All of the available operating modes for the general-purpose (GP) pins:
 - `IOC`: Digital input ("Interrupt-on-Change") that is sensitive to rising, falling, or both edges.
    - The desired edge can be configured using the `Flash` and `SRAM` modules.
 
-However, only certain pins support each of these modes — per the following matrix:
-```sh
-#                  / ———————————— + ———————————— + ———————————— + ———————————— \
-#                  |     GP0      |     GP1      |     GP2      |     GP3      |
-#    / ——————————— + ============ + ============ + ============ + ============ +
-#    |       GPIO  |     GPIO     |     GPIO     |     GPIO     |     GPIO     |
-#    |  Dedicated  |     SSPND    |     CLKR     |    USBCFG    |    LED_I2C   |
-#    |      Alt 1  |    LED_URX   |     ADC1     |     ADC2     |     ADC3     |
-#    |      Alt 2  |      --      |    LED_UTX   |     DAC1     |     DAC2     |
-#    |      Alt 3  |      --      |     IOC      |      --      |      --      |
-#    \ ——————————— + ———————————— + ———————————— + ———————————— + ———————————— /
-```
+###### GP pin supported modes
+However, only certain pins support each of the operating modes listed above — per the following matrix:
+<pre>
+                  ╔══════════════╤══════════════╤══════════════╤══════════════╗
+                  ║<b>     GP0      </b>│<b>     GP1      </b>│<b>     GP2      </b>│<b>     GP3      </b>║
+    ╔═════════════╬══════════════╪══════════════╪══════════════╪══════════════╣
+    ║<b>       GPIO  </b>║     GPIO     │     GPIO     │     GPIO     │     GPIO     ║
+    ║<b>  Dedicated  </b>║     SSPND    │     CLKR     │    USBCFG    │    LED_I2C   ║
+    ║<b>      Alt 1  </b>║    LED_URX   │     ADC1     │     ADC2     │     ADC3     ║
+    ║<b>      Alt 2  </b>║      --      │    LED_UTX   │     DAC1     │     DAC2     ║
+    ║<b>      Alt 3  </b>║      --      │     IOC      │      --      │      --      ║
+    ╚═════════════╩══════════════╧══════════════╧══════════════╧══════════════╝
+</pre>
