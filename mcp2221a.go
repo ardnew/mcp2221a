@@ -20,7 +20,7 @@ import (
 // Constants associated with package version.
 const (
 	VersionPkg = "mcp2221a"
-	VersionMaj = 1
+	VersionMaj = 0
 	VersionMin = 1
 	VersionPch = 0
 )
