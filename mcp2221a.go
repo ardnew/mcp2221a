@@ -1575,9 +1575,6 @@ func (mod *I2C) Write(stop bool, addr uint8, out []byte, cnt uint16) error {
 	}
 
 	if WordClr != stat.i2cState {
-		if i2cStateNACK(stat.i2cState) {
-			return fmt.Errorf("I²C NACK from address (0x%02X)", addr)
-		}
 		if err := mod.I2C.Cancel(); nil != err {
 			return fmt.Errorf("I2C.Cancel(): %v", err)
 		}
@@ -1625,13 +1622,14 @@ func (mod *I2C) Write(stop bool, addr uint8, out []byte, cnt uint16) error {
 				}
 				time.Sleep(300 * time.Microsecond)
 			} else {
-				partial := true
-				for partial {
-					if stat, err := mod.status(); nil != err {
-						return fmt.Errorf("status(): %v", err)
-					} else {
-						partial = i2cStatePartialData == stat.i2cState
-					}
+				partialData := func(im *I2C) bool {
+					stat, err := im.status()
+					// the error isn't handled here, we just break out of the loops. if it
+					// persists, the I²C state loop below will return it to the caller.
+					return (nil == err) && (i2cStatePartialData == stat.i2cState)
+				}
+				for partialData(mod) {
+					time.Sleep(300 * time.Microsecond)
 				}
 				pos += sz
 				break
@@ -1698,9 +1696,6 @@ func (mod *I2C) Read(rep bool, addr uint8, cnt uint16) ([]byte, error) {
 	}
 
 	if WordClr != stat.i2cState && i2cStateWritingNoStop != stat.i2cState {
-		if i2cStateNACK(stat.i2cState) {
-			return nil, fmt.Errorf("I²C NACK from address (0x%02X)", addr)
-		}
 		if err := mod.I2C.Cancel(); nil != err {
 			return nil, fmt.Errorf("I2C.Cancel(): %v", err)
 		}
