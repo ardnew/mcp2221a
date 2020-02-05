@@ -55,11 +55,6 @@ See [examples](examples) for some demo applications:
 - [Flash](examples/flash/main.go) - prints the USB product descriptors from flash memory, and toggles power-up GPIO output value on pin GP0
 
 ## Notes
-#### Where to get one
-Adafruit makes a crazy cheap, snazzy breakout with built-in 3.3V regulator (with VBUS/5V and 3.3V output pins), an I²C Qwiic/Stemma QT connector (as well as the regular SDA/SCL pins), and best of all a USB-C connector as its programming interface:
-- https://www.adafruit.com/product/4471
-- Only _**$6.50 USD**_ (5 Feb 2020) ?!!
-
 #### GP operating modes
 All of the available operating modes for the general-purpose (GP) pins:
 
@@ -80,8 +75,8 @@ All of the available operating modes for the general-purpose (GP) pins:
 - `IOC`: Digital input ("Interrupt-on-Change") that is sensitive to rising, falling, or both edges.
    - The desired edge can be configured using the `Flash` and `SRAM` modules.
 
-###### GP pin supported modes
-However, only certain pins support each of the operating modes listed above — per the following matrix:
+###### Supported modes
+However, only certain pins support each of the operating modes listed above — per the following matrix yanked from the datasheet:
 <pre>
                   ╔══════════════╤══════════════╤══════════════╤══════════════╗
                   ║<b>     GP0      </b>│<b>     GP1      </b>│<b>     GP2      </b>│<b>     GP3      </b>║
@@ -93,3 +88,16 @@ However, only certain pins support each of the operating modes listed above — 
     ║<b>      Alt 3  </b>║      --      │     IOC      │      --      │      --      ║
     ╚═════════════╩══════════════╧══════════════╧══════════════╧══════════════╝
 </pre>
+
+#### Datasheet
+Please refer to this before sending me a confusing question:
+- **[http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf](http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf)**
+
+To get started reading this thing, and easier grokking, note that:
+   - *The first half* of the datasheet (.pdf) defines internal registers and inter-component behaviors which are all but completely transparent to us. This info can be ignored, but be sure to read the front-matter and any component descriptions.
+   - *The second half* of the datasheet (.pdf) defines the USB HID command and response formats. This is the good stuff that pertains to developers of or using this Go module.
+
+#### Where to get one
+Adafruit makes a crazy cheap, snazzy breakout with built-in 3.3V regulator (with VBUS/5V and 3.3V output pins), an I²C Qwiic/Stemma QT connector (as well as the regular SDA/SCL pins), and best of all a USB-C connector as its programming interface:
+- https://www.adafruit.com/product/4471
+- Only _**$6.50 USD**_ (5 Feb 2020), wow!
