@@ -25,16 +25,16 @@ func main() {
 	pin := byte(2)
 
 	// set pin 2 to DAC mode
-	if err := m.DACSetConfig(pin, mcp.VRefDefault); nil != err {
-		log.Fatalf("DACSetConfig(): %v", err)
+	if err := m.DAC.SetConfig(pin, mcp.VRefDefault); nil != err {
+		log.Fatalf("DAC.SetConfig(): %v", err)
 	}
 
 	// repeatedly write and print an incrementing 5-bit value every 100 ms
 	val := uint16(0)
 	for {
 		val = (val + 1) % 0x20 // 5-bit maximum
-		if err := m.DACWrite(val); nil != err {
-			log.Fatalf("DACWrite(): %v", err)
+		if err := m.DAC.Write(val); nil != err {
+			log.Fatalf("DAC.Write(): %v", err)
 		} else {
 			log.Printf("Pin[%d] = %d", pin, val)
 		}

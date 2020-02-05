@@ -23,13 +23,13 @@ func main() {
 	}
 
 	// configure I2C module to use default baud rate (optional)
-	if err := m.I2CSetConfig(mcp.I2CBaudRate); nil != err {
-		log.Fatalf("I2CSetConfig(): %v", err)
+	if err := m.I2C.SetConfig(mcp.I2CBaudRate); nil != err {
+		log.Fatalf("I2C.SetConfig(): %v", err)
 	}
 
 	// identify all I2C slaves on the bus, printing their slave address
-	if addr, err := m.I2CScan(mcp.I2CMinAddr, mcp.I2CMaxAddr); nil != err {
-		log.Fatalf("I2CScan(): %v", err)
+	if addr, err := m.I2C.Scan(mcp.I2CMinAddr, mcp.I2CMaxAddr); nil != err {
+		log.Fatalf("I2C.Scan(): %v", err)
 	} else {
 		for _, a := range addr {
 			log.Printf("scan found = 0x%02X", a)
@@ -40,8 +40,8 @@ func main() {
 
 	// read the 16-bit data from device ID register (0xFF) from an INA260 power
 	// sensor at default slave address (0x40)
-	if buf, err := m.I2CReadReg(0x40, 0xFF, 2); nil != err {
-		log.Fatalf("I2CReadReg(): %v", err)
+	if buf, err := m.I2C.ReadReg(0x40, 0xFF, 2); nil != err {
+		log.Fatalf("I2C.ReadReg(): %v", err)
 	} else {
 
 		// parse the data received, packing it into a 16-bit unsigned int. the

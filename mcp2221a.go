@@ -159,18 +159,32 @@ const (
 // -- DEVICE -------------------------------------------------------- [start] --
 //
 
-// MCP2221A is the primary object used for interacting with the device.
+// MCP2221A is the primary object used for interacting with the device and all
+// of its modules.
 // The struct contains a pointer to an opened HIDAPI device through which all
-// USB communication occurs.
+// USB communication occurs. However, the HIDAPI device should not be used
+// directly, as communication should be performed through one of the respective
+// on-chip modules.
 // If multiple MCP2221A devices are connected to the host PC, the index of the
 // desired target can be determined with AttachedDevices() and passed to New().
 // An index of 0 will use the first device found.
+// Pointers to structs representing each of the chip's modules are exported for
+// interacting with that component of the device.
 // Call Close() on the device when finished to also close the USB connection.
 type MCP2221A struct {
 	Device *usb.Device
 	Index  byte
 	VID    uint16
 	PID    uint16
+
+	// each of the on-chip modules acting as primary functional interfaces.
+	SRAM  *ModSRAM  // volatile active settings, not restored on startup/reset
+	Flash *ModFlash // non-volatile inactive settings, restored on startup/reset
+	GPIO  *ModGPIO  // 4x GPIO pins, each also have unique special functions
+	ADC   *ModADC   // 3x 10-bit analog-to-digital converter
+	DAC   *ModDAC   // 1x 5-bit digital-to-analog converter (avail on 2 pins)
+	IOC   *ModIOC   // input interrupt detection (used with SSPND)
+	I2C   *ModI2C   // dedicated I²C SDA/SCL pins, up to 400 kHz
 }
 
 // AttachedDevices returns a slice of all connected USB HID device descriptors
@@ -207,6 +221,17 @@ func New(idx byte, vid uint16, pid uint16) (*MCP2221A, error) {
 	if int(idx) >= len(info) {
 		return nil, fmt.Errorf("device index %d out of range [0, %d]", idx, len(info)-1)
 	}
+
+	// each module embeds the common *MCP2221A instance so that the modules can
+	// refer to each others' functions.
+	mcp.SRAM, mcp.Flash, mcp.GPIO, mcp.ADC, mcp.DAC, mcp.IOC, mcp.I2C =
+		&ModSRAM{mcp},
+		&ModFlash{mcp},
+		&ModGPIO{mcp},
+		&ModADC{mcp},
+		&ModDAC{mcp},
+		&ModIOC{mcp},
+		&ModI2C{mcp}
 
 	var err error
 	if mcp.Device, err = info[idx].Open(); nil != err {
@@ -360,11 +385,11 @@ type status struct {
 	adcChan    []uint16
 }
 
-// statusParse parses the response message of the status command.
+// parseStatus parses the response message of the status command.
 //
 // Returns a pointer to a newly-created status object on success, or nil if the
 // given response message is nil or has inadequate length.
-func statusParse(msg []byte) *status {
+func parseStatus(msg []byte) *status {
 	if nil == msg || len(msg) < MsgSz {
 		return nil
 	}
@@ -402,6 +427,9 @@ func statusParse(msg []byte) *status {
 
 // status sends a status command request, parsing the response into an object
 // referred to by the return value.
+// We don't ever need the actual bytes from this response message to build a
+// cmdSetParams command, because these fields have "alter bits", which means it
+// can ignore any fields we aren't explicitly modifying.
 //
 // Returns a pointer to the parsed object on success, or nil along with an error
 // if the receiver is invalid or the status command could not be sent.
@@ -415,7 +443,7 @@ func (mcp *MCP2221A) status() (*status, error) {
 	if rsp, err := mcp.send(cmdStatus, cmd); nil != err {
 		return nil, fmt.Errorf("send(): %v", err)
 	} else {
-		return statusParse(rsp), nil
+		return parseStatus(rsp), nil
 	}
 }
 
@@ -423,7 +451,66 @@ func (mcp *MCP2221A) status() (*status, error) {
 // -----------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------
+// -- SRAM ---------------------------------------------------------- [start] --
+
+// ModSRAM contains the methods associated with the SRAM component of the
+// MCP2221A.
+type ModSRAM struct {
+	*MCP2221A
+}
+
+// read sends a command requesting current SRAM configuration and returns the
+// entire response message.
+//
+// Returns a nil slice and error if the receiver is invalid, the given range is
+// invalid, or if the configuration command could not be sent.
+func (mod *ModSRAM) read() ([]byte, error) {
+
+	if ok, err := mod.valid(); !ok {
+		return nil, err
+	}
+
+	cmd := makeMsg()
+	if rsp, err := mod.send(cmdSRAMGet, cmd); nil != err {
+		return nil, fmt.Errorf("send(): %v", err)
+	} else {
+		return rsp, nil
+	}
+}
+
+// readRange reads the current SRAM configuration and returns a byte slice
+// within the given interval (inclusive) from the response message.
+//
+// Returns a nil slice and error if the receiver is invalid, the given range is
+// invalid, or if the configuration command could not be sent.
+func (mod *ModSRAM) readRange(start byte, stop byte) ([]byte, error) {
+
+	if ok, err := mod.valid(); !ok {
+		return nil, err
+	}
+
+	if (start > stop) || (stop >= MsgSz) {
+		return nil, fmt.Errorf("invalid byte range: [%d, %d]", start, stop)
+	}
+
+	if rsp, err := mod.read(); nil != err {
+		return nil, fmt.Errorf("read(): %v", err)
+	} else {
+		return rsp[start : stop+1], nil
+	}
+}
+
+// -- SRAM ------------------------------------------------------------ [end] --
+// -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
 // -- FLASH --------------------------------------------------------- [start] --
+
+// ModFlash contains the methods associated with the flash memory component of
+// the MCP2221A.
+type ModFlash struct {
+	*MCP2221A
+}
 
 // Constants related to the flash memory module.
 const (
@@ -453,7 +540,7 @@ const (
 // chipSettings contains the "chip settings" (subcommand 0x00) configuration
 // stored in flash memory. the members are conveniently typed for general usage.
 // Obtain a new instance containing the actual current data stored in flash by
-// calling chipSettingsParse() with the return from flashGetChipSettings().
+// calling parseChipSettings() with the return from chipSettings().
 type chipSettings struct {
 	cdcSerialNoEnumEnable bool
 	ledUARTRxPol          Polarity
@@ -473,12 +560,12 @@ type chipSettings struct {
 	usbReqCurrent         byte
 }
 
-// chipSettingsParse parses the response message from the chip settings
+// parseChipSettings parses the response message from the chip settings
 // subcommand of the flash read command.
 //
 // Returns a pointer to a newly-created chipSettings object on success, or nil
 // if the given response message is nil or has inadequate length.
-func chipSettingsParse(msg []byte) *chipSettings {
+func parseChipSettings(msg []byte) *chipSettings {
 	if nil == msg || len(msg) < MsgSz {
 		return nil
 	}
@@ -502,14 +589,14 @@ func chipSettingsParse(msg []byte) *chipSettings {
 	}
 }
 
-// flashRead reads the settings associated with the given subcommand sub from
-// flash memory and returns the response message.
+// read reads the settings associated with the given subcommand sub from flash
+// memory and returns the response message.
 //
 // Returns nil and an error if the receiver is invalid, subcommand is invalid,
 // or if the flash read command could not be sent.
-func (mcp *MCP2221A) flashRead(sub byte) ([]byte, error) {
+func (mod *ModFlash) read(sub byte) ([]byte, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return nil, err
 	}
 
@@ -520,21 +607,21 @@ func (mcp *MCP2221A) flashRead(sub byte) ([]byte, error) {
 	cmd := makeMsg()
 	cmd[1] = sub
 
-	if rsp, err := mcp.send(cmdFlashRead, cmd); nil != err {
+	if rsp, err := mod.send(cmdFlashRead, cmd); nil != err {
 		return nil, fmt.Errorf("send(): %v", err)
 	} else {
 		return rsp, nil
 	}
 }
 
-// flashWrite writes the given settings data associated with subcommand sub to
-// flash memory.
+// write writes the given settings data associated with subcommand sub to flash
+// memory.
 //
 // Returns an error if the receiver is invalid, subcommand is invalid, or if the
 // flash write command could not be sent.
-func (mcp *MCP2221A) flashWrite(sub byte, data []byte) error {
+func (mod *ModFlash) write(sub byte, data []byte) error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
@@ -544,63 +631,58 @@ func (mcp *MCP2221A) flashWrite(sub byte, data []byte) error {
 
 	data[1] = sub
 
-	if _, err := mcp.send(cmdFlashWrite, data); nil != err {
+	if _, err := mod.send(cmdFlashWrite, data); nil != err {
 		return fmt.Errorf("send(): %v", err)
-	}
-
-	if rsp, err := mcp.flashRead(subcmdGPSettings); nil != err {
-		logMsg(rsp)
 	}
 
 	return nil
 }
 
-// flashGetChipSettings reads the current chip settings stored in flash memory
-// and returns the byte slice from its response message.
+// chipSettings reads the current chip settings stored in flash memory and
+// returns the byte slice from its response message.
 // These settings do not necessarily reflect the current device configuration,
-// which are stored in SRAM (see: sramGet()).
+// which are stored in SRAM.
 //
 // Returns nil with an error if the receiver is invalid or could not read from
 // flash memory.
-func (mcp *MCP2221A) flashGetChipSettings() ([]byte, error) {
+func (mod *ModFlash) chipSettings() ([]byte, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return nil, err
 	}
 
-	if rsp, err := mcp.flashRead(subcmdChipSettings); nil != err {
-		return nil, fmt.Errorf("flashRead(): %v", err)
+	if rsp, err := mod.read(subcmdChipSettings); nil != err {
+		return nil, fmt.Errorf("read(): %v", err)
 	} else {
 		return rsp, nil
 	}
 }
 
-// flashGetGPSettings reads the current GP settings (containing the
-// configuration of all GPIO pins) from flash memory and returns a slice of
-// bytes from the response containing each pin's configuration.
+// gpioSettings reads the current GP settings from flash memory and returns only
+// the range of bytes containing all of the GPIO pin configurations.
 // The returned slice will always be the same length (4), and each pin's
 // configuration is stored at its respective index (i.e. pin 2 will be at [2]).
 // These settings do not necessarily reflect the current device configuration,
-// which are stored in SRAM (see: sramGet()).
+// which are stored in SRAM.
 //
 // Returns nil with an error if the receiver is invalid or could not read from
 // flash memory.
-func (mcp *MCP2221A) flashGetGPSettings() ([]byte, error) {
+func (mod *ModFlash) gpioSettings() ([]byte, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return nil, err
 	}
 
-	if rsp, err := mcp.flashRead(subcmdGPSettings); nil != err {
-		return nil, fmt.Errorf("flashRead(): %v", err)
+	if rsp, err := mod.read(subcmdGPSettings); nil != err {
+		return nil, fmt.Errorf("read(): %v", err)
 	} else {
 		return rsp[4:8], nil
 	}
 }
 
-// flashParseString parses a UTF-16-encoded string stored in the response
+// parseFlashString parses a UTF-16-encoded string stored in the response
 // messages of flash read commands (0xB0).
-func flashParseString(b []byte) string {
+func parseFlashString(b []byte) string {
 
 	// 16-bit unicode (2 bytes per rune), starting at byte 4
 	const max byte = (MsgSz - 4) / 2
@@ -622,73 +704,73 @@ func flashParseString(b []byte) string {
 	return string(utf16.Decode(p))
 }
 
-// FlashGetUSBManufacturer reads the current USB manufacturer description from
-// flash memory and returns it as a string.
-//
-// Returns an empty string and error if the receiver is invalid or if the flash
-// configuration could not be read.
-func (mcp *MCP2221A) FlashGetUSBManufacturer() (string, error) {
-
-	if ok, err := mcp.valid(); !ok {
-		return "", err
-	}
-
-	if rsp, err := mcp.flashRead(subcmdUSBMfgDesc); nil != err {
-		return "", fmt.Errorf("flashRead(): %v", err)
-	} else {
-		return flashParseString(rsp), nil
-	}
-}
-
-// FlashGetUSBProduct reads the current USB product description from flash
+// USBManufacturer reads the current USB manufacturer description from flash
 // memory and returns it as a string.
 //
 // Returns an empty string and error if the receiver is invalid or if the flash
 // configuration could not be read.
-func (mcp *MCP2221A) FlashGetUSBProduct() (string, error) {
+func (mod *ModFlash) USBManufacturer() (string, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return "", err
 	}
 
-	if rsp, err := mcp.flashRead(subcmdUSBProdDesc); nil != err {
-		return "", fmt.Errorf("flashRead(): %v", err)
+	if rsp, err := mod.read(subcmdUSBMfgDesc); nil != err {
+		return "", fmt.Errorf("read(): %v", err)
 	} else {
-		return flashParseString(rsp), nil
+		return parseFlashString(rsp), nil
 	}
 }
 
-// FlashGetUSBSerialNo reads the current USB serial number from flash memory and
+// USBProduct reads the current USB product description from flash memory and
 // returns it as a string.
 //
 // Returns an empty string and error if the receiver is invalid or if the flash
 // configuration could not be read.
-func (mcp *MCP2221A) FlashGetUSBSerialNo() (string, error) {
+func (mod *ModFlash) USBProduct() (string, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return "", err
 	}
 
-	if rsp, err := mcp.flashRead(subcmdUSBSerialNo); nil != err {
-		return "", fmt.Errorf("flashRead(): %v", err)
+	if rsp, err := mod.read(subcmdUSBProdDesc); nil != err {
+		return "", fmt.Errorf("read(): %v", err)
 	} else {
-		return flashParseString(rsp), nil
+		return parseFlashString(rsp), nil
 	}
 }
 
-// FlashGetFactorySerialNo reads the factory (read-only) serial number from
-// flash memory and returns it as a string.
+// USBSerialNo reads the current USB serial number from flash memory and returns
+// it as a string.
 //
 // Returns an empty string and error if the receiver is invalid or if the flash
 // configuration could not be read.
-func (mcp *MCP2221A) FlashGetFactorySerialNo() (string, error) {
+func (mod *ModFlash) USBSerialNo() (string, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return "", err
 	}
 
-	if rsp, err := mcp.flashRead(subcmdSerialNo); nil != err {
-		return "", fmt.Errorf("flashRead(): %v", err)
+	if rsp, err := mod.read(subcmdUSBSerialNo); nil != err {
+		return "", fmt.Errorf("read(): %v", err)
+	} else {
+		return parseFlashString(rsp), nil
+	}
+}
+
+// FactorySerialNo reads the factory serial number (read-only) from flash memory
+// and returns it as a string.
+//
+// Returns an empty string and error if the receiver is invalid or if the flash
+// configuration could not be read.
+func (mod *ModFlash) FactorySerialNo() (string, error) {
+
+	if ok, err := mod.valid(); !ok {
+		return "", err
+	}
+
+	if rsp, err := mod.read(subcmdSerialNo); nil != err {
+		return "", fmt.Errorf("read(): %v", err)
 	} else {
 		cnt := rsp[2] - 2
 		if cnt > MsgSz-4 {
@@ -702,38 +784,12 @@ func (mcp *MCP2221A) FlashGetFactorySerialNo() (string, error) {
 // -----------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------
-// -- SRAM ---------------------------------------------------------- [start] --
-
-// sramGet sends a command requesting current SRAM configuration and returns a
-// byte slice within the given interval from the response message.
-// These settings do not necessarily reflect the default device configuration,
-// which is stored in flash memory (see: flashRead() and flashGet_*_()).
-//
-// Returns a nil slice and error if the receiver is invalid, the given range is
-// invalid, or if the configuration command could not be sent.
-func (mcp *MCP2221A) sramGet(start byte, stop byte) ([]byte, error) {
-
-	if ok, err := mcp.valid(); !ok {
-		return nil, err
-	}
-
-	if (start > stop) || (stop >= MsgSz) {
-		return nil, fmt.Errorf("invalid byte range: [%d, %d]", start, stop)
-	}
-
-	cmd := makeMsg()
-	if rsp, err := mcp.send(cmdSRAMGet, cmd); nil != err {
-		return nil, fmt.Errorf("send(): %v", err)
-	} else {
-		return rsp[start : stop+1], nil
-	}
-}
-
-// -- SRAM ------------------------------------------------------------ [end] --
-// -----------------------------------------------------------------------------
-
-// -----------------------------------------------------------------------------
 // -- GPIO ---------------------------------------------------------- [start] --
+
+// ModGPIO contains the methods associated with the GPIO module of the MCP2221A.
+type ModGPIO struct {
+	*MCP2221A
+}
 
 // Constants associated with the GPIO module.
 const (
@@ -762,17 +818,17 @@ const (
 	DirInvalid GPIODir = 0xEF // invalid direction is used as error condition
 )
 
-// GPIOSetConfig configures a given pin with a default output value, operation
-// mode, and direction.
+// SetConfig configures a given pin with a default output value, operation mode,
+// and direction.
 // These settings only affect the current device configuration and are not
-// retained after next startup/reset (see: GPIOFlashConfig()).
+// retained after next startup/reset (see: FlashConfig()).
 //
 // Returns an error if the receiver is invalid, the pin index is invalid, the
 // current configuration could not be read, or if the new configuration could
 // not be sent.
-func (mcp *MCP2221A) GPIOSetConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) error {
+func (mod *ModGPIO) SetConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
@@ -782,8 +838,8 @@ func (mcp *MCP2221A) GPIOSetConfig(pin byte, val byte, mode GPIOMode, dir GPIODi
 
 	cmd := makeMsg()
 
-	if cur, err := mcp.sramGet(22, 25); nil != err {
-		return fmt.Errorf("sramGet(): %v", err)
+	if cur, err := mod.SRAM.readRange(22, 25); nil != err {
+		return fmt.Errorf("SRAM.readRange(): %v", err)
 	} else {
 		// copy the current GPIO settings because they will -all- be set with the
 		// command request
@@ -794,23 +850,23 @@ func (mcp *MCP2221A) GPIOSetConfig(pin byte, val byte, mode GPIOMode, dir GPIODi
 	// and then update our selected pin as desired
 	cmd[8+pin] = (val << 4) | (byte(dir) << 3) | byte(mode)
 
-	if _, err := mcp.send(cmdSRAMSet, cmd); nil != err {
+	if _, err := mod.send(cmdSRAMSet, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
 	}
 
 	return nil
 }
 
-// GPIOFlashConfig configures a given pin with a default output value, operation
+// FlashConfig configures a given pin with a default output value, operation
 // mode, direction, and then writes that configuration to flash memory.
 // These settings become default and are retained after next startup/reset.
 //
 // Returns an error if the receiver is invalid, the pin index is invalid, the
 // current configuration could not be read, or if the new configuration could
 // not be sent.
-func (mcp *MCP2221A) GPIOFlashConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) error {
+func (mod *ModGPIO) FlashConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
@@ -818,35 +874,35 @@ func (mcp *MCP2221A) GPIOFlashConfig(pin byte, val byte, mode GPIOMode, dir GPIO
 		return fmt.Errorf("invalid GPIO pin: %d", pin)
 	}
 
-	if err := mcp.GPIOSetConfig(pin, val, mode, dir); nil != err {
-		return fmt.Errorf("GPIOSetConfig(): %v", err)
+	if err := mod.SetConfig(pin, val, mode, dir); nil != err {
+		return fmt.Errorf("SetConfig(): %v", err)
 	}
 
 	cmd := makeMsg()
 
-	if cur, err := mcp.flashGetGPSettings(); nil != err {
-		return fmt.Errorf("flashGetGPSettings(): %v", err)
+	if cur, err := mod.Flash.gpioSettings(); nil != err {
+		return fmt.Errorf("Flash.gpioSettings(): %v", err)
 	} else {
 		copy(cmd[2:], cur)
 	}
 
 	cmd[2+pin] = (val << 4) | (byte(dir) << 3) | byte(mode)
 
-	if err := mcp.flashWrite(subcmdGPSettings, cmd); nil != err {
-		return fmt.Errorf("flashWrite(): %v", err)
+	if err := mod.Flash.write(subcmdGPSettings, cmd); nil != err {
+		return fmt.Errorf("Flash.write(): %v", err)
 	}
 
 	return nil
 }
 
-// GPIOGetConfig reads the current default output value, operation mode, and
+// GetConfig reads the current default output value, operation mode, and
 // direction of a given pin.
 //
 // Returns an error if the receiver is invalid, the pin index is invalid, or if
 // the current configuration could not be read.
-func (mcp *MCP2221A) GPIOGetConfig(pin byte) (byte, GPIOMode, GPIODir, error) {
+func (mod *ModGPIO) GetConfig(pin byte) (byte, GPIOMode, GPIODir, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return WordClr, ModeInvalid, DirInvalid, err
 	}
 
@@ -854,8 +910,8 @@ func (mcp *MCP2221A) GPIOGetConfig(pin byte) (byte, GPIOMode, GPIODir, error) {
 		return WordClr, ModeInvalid, DirInvalid, fmt.Errorf("invalid GPIO pin: %d", pin)
 	}
 
-	if rsp, err := mcp.sramGet(22, 25); nil != err {
-		return WordClr, ModeInvalid, DirInvalid, fmt.Errorf("sramGet(): %v", err)
+	if rsp, err := mod.SRAM.readRange(22, 25); nil != err {
+		return WordClr, ModeInvalid, DirInvalid, fmt.Errorf("SRAM.readRange(): %v", err)
 	} else {
 		mode := GPIOMode(rsp[pin] & 0x07)
 		dir := GPIODir((rsp[pin] >> 3) & 0x01)
@@ -864,13 +920,13 @@ func (mcp *MCP2221A) GPIOGetConfig(pin byte) (byte, GPIOMode, GPIODir, error) {
 	}
 }
 
-// GPIOSet sets the digital output value for a given pin.
+// Set sets the digital output value for a given pin.
 //
 // Returns an error if the receiver is invalid, the pin index is invalid, or if
 // the pin value could not be set (e.g. pin not configured for GPIO operation).
-func (mcp *MCP2221A) GPIOSet(pin byte, val byte) error {
+func (mod *ModGPIO) Set(pin byte, val byte) error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
@@ -886,20 +942,20 @@ func (mcp *MCP2221A) GPIOSet(pin byte, val byte) error {
 	cmd[i+2] = WordSet // alter GPIO direction (to output)
 	cmd[i+3] = byte(DirOutput)
 
-	if _, err := mcp.send(cmdGPIOSet, cmd); nil != err {
+	if _, err := mod.send(cmdGPIOSet, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
 	}
 
 	return nil
 }
 
-// GPIOGet gets the current digital value of a given pin.
+// Get gets the current digital value of a given pin.
 //
 // Returns an error if the receiver is invalid, the pin index is invalid, or if
 // the pin value could not be set (e.g. pin not configured for GPIO operation).
-func (mcp *MCP2221A) GPIOGet(pin byte) (byte, error) {
+func (mod *ModGPIO) Get(pin byte) (byte, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return WordClr, err
 	}
 
@@ -908,7 +964,7 @@ func (mcp *MCP2221A) GPIOGet(pin byte) (byte, error) {
 	}
 
 	cmd := makeMsg()
-	if rsp, err := mcp.send(cmdGPIOGet, cmd); nil != err {
+	if rsp, err := mod.send(cmdGPIOGet, cmd); nil != err {
 		return WordClr, fmt.Errorf("send(): %v", err)
 	} else {
 		i := 2 + 2*pin
@@ -926,16 +982,21 @@ func (mcp *MCP2221A) GPIOGet(pin byte) (byte, error) {
 // -----------------------------------------------------------------------------
 // -- ADC ----------------------------------------------------------- [start] --
 
-// ADCSetConfig configures the analog-to-digital converter by setting the given
+// ModADC contains the methods associated with the ADC module of the MCP2221A.
+type ModADC struct {
+	*MCP2221A
+}
+
+// SetConfig configures the analog-to-digital converter by setting the given
 // pin's operation mode to ADC and the ADC reference voltage to ref.
 // These settings only affect the current device configuration and are not
-// retained after next startup/reset (see: ADCFlashConfig()).
+// retained after next startup/reset (see: FlashConfig()).
 //
 // Returns an error if the receiver is invalid, pin does not have an associated
 // ADC channel, ref is invalid, or if the new configuration could not be sent.
-func (mcp *MCP2221A) ADCSetConfig(pin byte, ref VRef) error {
+func (mod *ModADC) SetConfig(pin byte, ref VRef) error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
@@ -951,8 +1012,8 @@ func (mcp *MCP2221A) ADCSetConfig(pin byte, ref VRef) error {
 		return fmt.Errorf("invalid reference voltage: %d", ref)
 	}
 
-	if err := mcp.GPIOSetConfig(pin, WordClr, ModeADC, DirInput); nil != err {
-		return fmt.Errorf("GPIOSetConfig(): %v", err)
+	if err := mod.GPIO.SetConfig(pin, WordClr, ModeADC, DirInput); nil != err {
+		return fmt.Errorf("GPIO.SetConfig(): %v", err)
 	}
 
 	cmd := makeMsg()
@@ -960,23 +1021,23 @@ func (mcp *MCP2221A) ADCSetConfig(pin byte, ref VRef) error {
 	// set VREF alter bit (7) and set reference voltage enum
 	cmd[5] = (1 << 7) | byte(ref)
 
-	if _, err := mcp.send(cmdSRAMSet, cmd); nil != err {
+	if _, err := mod.send(cmdSRAMSet, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
 	}
 
 	return nil
 }
 
-// ADCFlashConfig configures the analog-to-digital converter by setting the
-// given pin's operation mode to ADC, the ADC reference voltage to ref, and then
+// FlashConfig configures the analog-to-digital converter by setting the given
+// pin's operation mode to ADC, the ADC reference voltage to ref, and then
 // writes these settings to flash memory.
 // These settings become default and are retained after next startup/reset.
 //
 // Returns an error if the receiver is invalid, pin does not have an associated
 // ADC channel, ref is invalid, or if the new configuration could not be sent.
-func (mcp *MCP2221A) ADCFlashConfig(pin byte, ref VRef) error {
+func (mod *ModADC) FlashConfig(pin byte, ref VRef) error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
@@ -992,32 +1053,32 @@ func (mcp *MCP2221A) ADCFlashConfig(pin byte, ref VRef) error {
 		return fmt.Errorf("invalid reference voltage: %d", ref)
 	}
 
-	if err := mcp.GPIOFlashConfig(pin, WordClr, ModeADC, DirInput); nil != err {
-		return fmt.Errorf("GPIOFlashConfig(): %v", err)
+	if err := mod.GPIO.FlashConfig(pin, WordClr, ModeADC, DirInput); nil != err {
+		return fmt.Errorf("GPIO.FlashConfig(): %v", err)
 	}
 
-	if rsp, err := mcp.flashGetChipSettings(); nil != err {
-		return fmt.Errorf("flashGetChipSettings(): %v", err)
+	if rsp, err := mod.Flash.chipSettings(); nil != err {
+		return fmt.Errorf("Flash.chipSettings(): %v", err)
 	} else {
 		rsp[5] &= ^byte(0x07 << 2) // mask off the VRef bits (2-4)
 		rsp[5] |= (byte(ref) << 2)
 
-		if err := mcp.flashWrite(subcmdChipSettings, rsp); nil != err {
-			return fmt.Errorf("flashWrite(): %v", err)
+		if err := mod.Flash.write(subcmdChipSettings, rsp); nil != err {
+			return fmt.Errorf("Flash.write(): %v", err)
 		}
 	}
 
 	return nil
 }
 
-// ADCGetConfig reads the current ADC configuration for the given pin, returning
+// GetConfig reads the current ADC configuration for the given pin, returning
 // the ADC reference voltage.
 //
 // Returns VRefDefault reference voltage and an error if the receiver is
 // invalid, pin is invalid, or if the current configuration could not be read.
-func (mcp *MCP2221A) ADCGetConfig(pin byte) (VRef, error) {
+func (mod *ModADC) GetConfig(pin byte) (VRef, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return VRefDefault, err
 	}
 
@@ -1029,23 +1090,23 @@ func (mcp *MCP2221A) ADCGetConfig(pin byte) (VRef, error) {
 		return VRefDefault, fmt.Errorf("pin does not support ADC: %d", pin)
 	}
 
-	if buf, err := mcp.sramGet(7, 7); nil != err {
-		return VRefDefault, fmt.Errorf("sramGet(): %v", err)
+	if buf, err := mod.SRAM.readRange(7, 7); nil != err {
+		return VRefDefault, fmt.Errorf("SRAM.readRange(): %v", err)
 	} else {
 		ref := VRef((buf[0] >> 2) & 0x07)
 		return ref, nil
 	}
 }
 
-// ADCRead performs an analog-to-digital conversion reading on the given pin and
+// Read performs an analog-to-digital conversion reading on the given pin and
 // returns the value.
 //
 // Returns the converted analog value as an unsigned 16-bit integer.
 // Returns an error if the receiver is invalid, VRef is invalid, or if the new
 // configuration could not be sent.
-func (mcp *MCP2221A) ADCRead(pin byte) (uint16, error) {
+func (mod *ModADC) Read(pin byte) (uint16, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return 0, err
 	}
 
@@ -1062,7 +1123,7 @@ func (mcp *MCP2221A) ADCRead(pin byte) (uint16, error) {
 		return 0, fmt.Errorf("pin does not support ADC: %d", pin)
 	}
 
-	if stat, err := mcp.status(); nil != err {
+	if stat, err := mod.status(); nil != err {
 		return 0, fmt.Errorf("status(): %v", err)
 	} else {
 		return stat.adcChan[adc], nil
@@ -1075,16 +1136,21 @@ func (mcp *MCP2221A) ADCRead(pin byte) (uint16, error) {
 // -----------------------------------------------------------------------------
 // -- DAC ----------------------------------------------------------- [start] --
 
-// DACSetConfig configures the digital-to-analog converter by setting the given
+// ModDAC contains the methods associated with the DAC module of the MCP2221A.
+type ModDAC struct {
+	*MCP2221A
+}
+
+// SetConfig configures the digital-to-analog converter by setting the given
 // pin's operation mode to DAC and the DAC reference voltage to ref.
 // These settings only affect the current device configuration and are not
-// retained after next startup/reset (see: DACFlashConfig()).
+// retained after next startup/reset (see: FlashConfig()).
 //
 // Returns an error if the receiver is invalid, pin does not have an associated
 // DAC output, ref is invalid, or if the new configuration could not be sent.
-func (mcp *MCP2221A) DACSetConfig(pin byte, ref VRef) error {
+func (mod *ModDAC) SetConfig(pin byte, ref VRef) error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
@@ -1100,8 +1166,8 @@ func (mcp *MCP2221A) DACSetConfig(pin byte, ref VRef) error {
 		return fmt.Errorf("invalid reference voltage: %d", ref)
 	}
 
-	if err := mcp.GPIOSetConfig(pin, WordClr, ModeDAC, DirOutput); nil != err {
-		return fmt.Errorf("GPIOSetConfig(): %v", err)
+	if err := mod.GPIO.SetConfig(pin, WordClr, ModeDAC, DirOutput); nil != err {
+		return fmt.Errorf("GPIO.SetConfig(): %v", err)
 	}
 
 	cmd := makeMsg()
@@ -1109,24 +1175,23 @@ func (mcp *MCP2221A) DACSetConfig(pin byte, ref VRef) error {
 	// set VREF alter bit (7) and set reference voltage enum
 	cmd[3] = (1 << 7) | byte(ref)
 
-	if _, err := mcp.send(cmdSRAMSet, cmd); nil != err {
+	if _, err := mod.send(cmdSRAMSet, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
 	}
 
 	return nil
 }
 
-// DACFlashConfig configures the digital-to-analog converter by setting the
-// given pin's operation mode to DAC, the DAC reference voltage to ref, the
-// default startup output value to val, and then writes these settings to flash
-// memory.
+// FlashConfig configures the digital-to-analog converter by setting the given
+// pin's operation mode to DAC, the DAC reference voltage to ref, the default
+// startup output value to val, and then writes these settings to flash memory.
 // These settings become default and are retained after next startup/reset.
 //
 // Returns an error if the receiver is invalid, pin does not have an associated
 // DAC output, ref is invalid, or if the new configuration could not be sent.
-func (mcp *MCP2221A) DACFlashConfig(pin byte, ref VRef, val byte) error {
+func (mod *ModDAC) FlashConfig(pin byte, ref VRef, val byte) error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
@@ -1142,32 +1207,32 @@ func (mcp *MCP2221A) DACFlashConfig(pin byte, ref VRef, val byte) error {
 		return fmt.Errorf("invalid reference voltage: %d", ref)
 	}
 
-	if err := mcp.GPIOFlashConfig(pin, WordClr, ModeDAC, DirOutput); nil != err {
-		return fmt.Errorf("GPIOFlashConfig(): %v", err)
+	if err := mod.GPIO.FlashConfig(pin, WordClr, ModeDAC, DirOutput); nil != err {
+		return fmt.Errorf("GPIO.FlashConfig(): %v", err)
 	}
 
-	if rsp, err := mcp.flashGetChipSettings(); nil != err {
-		return fmt.Errorf("flashGetChipSettings(): %v", err)
+	if rsp, err := mod.Flash.chipSettings(); nil != err {
+		return fmt.Errorf("Flash.chipSettings(): %v", err)
 	} else {
 		rsp[4] = (byte(ref) << 5) | (val & 0x1F)
 
-		if err := mcp.flashWrite(subcmdChipSettings, rsp); nil != err {
-			return fmt.Errorf("flashWrite(): %v", err)
+		if err := mod.Flash.write(subcmdChipSettings, rsp); nil != err {
+			return fmt.Errorf("Flash.write(): %v", err)
 		}
 	}
 
 	return nil
 }
 
-// DACGetConfig reads the current DAC configuration for the given pin, returning
+// GetConfig reads the current DAC configuration for the given pin, returning
 // the power-up DAC value and reference voltage.
 //
 // Returns WordClr power-up value, VRefDefault reference voltage, and an error
 // if the receiver is invalid, pin is invalid or is not configured for DAC
 // operation, or if the current configuration could not be read.
-func (mcp *MCP2221A) DACGetConfig(pin byte) (byte, VRef, error) {
+func (mod *ModDAC) GetConfig(pin byte) (byte, VRef, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return WordClr, VRefDefault, err
 	}
 
@@ -1179,8 +1244,8 @@ func (mcp *MCP2221A) DACGetConfig(pin byte) (byte, VRef, error) {
 		return WordClr, VRefDefault, fmt.Errorf("pin does not support DAC: %d", pin)
 	}
 
-	if buf, err := mcp.sramGet(6, 6); nil != err {
-		return WordClr, VRefDefault, fmt.Errorf("sramGet(): %v", err)
+	if buf, err := mod.SRAM.readRange(6, 6); nil != err {
+		return WordClr, VRefDefault, fmt.Errorf("SRAM.readRange(): %v", err)
 	} else {
 		val := (buf[0] & 0x1F) // power-up DAC value (bits 0-4)
 		ref := VRef((buf[0] >> 5) & 0x07)
@@ -1188,17 +1253,17 @@ func (mcp *MCP2221A) DACGetConfig(pin byte) (byte, VRef, error) {
 	}
 }
 
-// DACWrite performs a digital-to-analog conversion and outputs the given value
-// on all DAC-enabled pins.
+// Write performs a digital-to-analog conversion and outputs the given value on
+// all DAC-enabled pins.
 // The device only has a single DAC with two pins connected to it, so the value
 // output will be present on both pins if they are both configured for DAC
 // operation.
 //
 // Returns an error if the receiver is invalid or if the converted value could
 // not be sent.
-func (mcp *MCP2221A) DACWrite(val uint16) error {
+func (mod *ModDAC) Write(val uint16) error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
@@ -1207,7 +1272,7 @@ func (mcp *MCP2221A) DACWrite(val uint16) error {
 	// set DAC alter bit (7) and set requested 5-bit value
 	cmd[4] = (1 << 7) | byte(val&0x1F)
 
-	if _, err := mcp.send(cmdSRAMSet, cmd); nil != err {
+	if _, err := mod.send(cmdSRAMSet, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
 	}
 
@@ -1220,6 +1285,11 @@ func (mcp *MCP2221A) DACWrite(val uint16) error {
 // -----------------------------------------------------------------------------
 // -- IOC ----------------------------------------------------------- [start] --
 
+// ModIOC contains the methods associated with the IOC module of the MCP2221A.
+type ModIOC struct {
+	*MCP2221A
+}
+
 // Constants associated with the interrupt detection module (IOC).
 const (
 	DisableIOC        IOCEdge = 0x00
@@ -1228,18 +1298,18 @@ const (
 	RisingFallingEdge IOCEdge = 0x03
 )
 
-// IOCSetConfig configures the sole interrupt-capable GPIO pin's operation mode
-// for interrupt detection, sets the edge detection to the given edge, and
-// clears the current interrupt flag.
+// SetConfig configures the sole interrupt-capable GPIO pin's operation mode for
+// interrupt detection, sets the edge detection to the given edge, and clears
+// the current interrupt flag.
 // These settings only affect the current device configuration and are not
-// retained after next startup/reset (see: IOCFlashConfig()).
+// retained after next startup/reset (see: FlashConfig()).
 //
 // Returns an error if the receiver is invalid, the pin's operation mode could
 // not be set, the edge configuration could not be set, or if the interrupt flag
 // could not be cleared.
-func (mcp *MCP2221A) IOCSetConfig(edge IOCEdge) error {
+func (mod *ModIOC) SetConfig(edge IOCEdge) error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
@@ -1247,8 +1317,8 @@ func (mcp *MCP2221A) IOCSetConfig(edge IOCEdge) error {
 		return fmt.Errorf("invalid interrupt detection edge: %d", edge)
 	}
 
-	if err := mcp.GPIOSetConfig(pinIOC, WordClr, ModeInterrupt, DirInput); nil != err {
-		return fmt.Errorf("GPIOSetConfig(): %v", err)
+	if err := mod.GPIO.SetConfig(pinIOC, WordClr, ModeInterrupt, DirInput); nil != err {
+		return fmt.Errorf("GPIO.SetConfig(): %v", err)
 	}
 
 	// first, configure the interrupt detection module per edge argument
@@ -1272,7 +1342,7 @@ func (mcp *MCP2221A) IOCSetConfig(edge IOCEdge) error {
 		}
 	}
 
-	if _, err := mcp.send(cmdSRAMSet, cmd); nil != err {
+	if _, err := mod.send(cmdSRAMSet, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
 	}
 
@@ -1281,25 +1351,25 @@ func (mcp *MCP2221A) IOCSetConfig(edge IOCEdge) error {
 
 	cmd[24] = WordClr
 
-	if _, err := mcp.send(cmdSetParams, cmd); nil != err {
+	if _, err := mod.send(cmdSetParams, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
 	}
 
 	return nil
 }
 
-// IOCFlashConfig configures the sole interrupt-capable GPIO pin's operation
-// mode for interrupt detection, sets the edge detection to the given edge,
-// and then writes these settings to flash memory.
-// Note the interrupt flag is not cleared as it is with IOCSetConfig().
+// FlashConfig configures the sole interrupt-capable GPIO pin's operation mode
+// for interrupt detection, sets the edge detection to the given edge, and then
+// writes these settings to flash memory.
+// Note the interrupt flag is not cleared as it is with SetConfig().
 // These settings become default and are retained after next startup/reset.
 //
 // Returns an error if the receiver is invalid, the pin's operation mode could
 // not be set, the edge configuration could not be set, or if the interrupt flag
 // could not be cleared.
-func (mcp *MCP2221A) IOCFlashConfig(edge IOCEdge) error {
+func (mod *ModIOC) FlashConfig(edge IOCEdge) error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
@@ -1307,37 +1377,37 @@ func (mcp *MCP2221A) IOCFlashConfig(edge IOCEdge) error {
 		return fmt.Errorf("invalid interrupt detection edge: %d", edge)
 	}
 
-	if err := mcp.GPIOFlashConfig(pinIOC, WordClr, ModeInterrupt, DirInput); nil != err {
-		return fmt.Errorf("GPIOFlashConfig(): %v", err)
+	if err := mod.GPIO.FlashConfig(pinIOC, WordClr, ModeInterrupt, DirInput); nil != err {
+		return fmt.Errorf("GPIO.FlashConfig(): %v", err)
 	}
 
-	if rsp, err := mcp.flashGetChipSettings(); nil != err {
-		return fmt.Errorf("flashGetChipSettings(): %v", err)
+	if rsp, err := mod.Flash.chipSettings(); nil != err {
+		return fmt.Errorf("Flash.chipSettings(): %v", err)
 	} else {
 		rsp[5] &= ^byte(0x03 << 5) // mask off the edge bits (5-6)
 		rsp[5] |= (byte(edge) << 5)
 
-		if err := mcp.flashWrite(subcmdChipSettings, rsp); nil != err {
-			return fmt.Errorf("flashWrite(): %v", err)
+		if err := mod.Flash.write(subcmdChipSettings, rsp); nil != err {
+			return fmt.Errorf("Flash.write(): %v", err)
 		}
 	}
 
 	return nil
 }
 
-// IOCGetConfig returns the selected detection edge configured for the interrupt
+// GetConfig returns the selected detection edge configured for the interrupt
 // detection module.
 //
 // Returns DisableIOC detection edge and an error if the receiver is invalid or
 // if the current configuration could not be read.
-func (mcp *MCP2221A) IOCGetConfig() (IOCEdge, error) {
+func (mod *ModIOC) GetConfig() (IOCEdge, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return DisableIOC, err
 	}
 
-	if buf, err := mcp.sramGet(7, 7); nil != err {
-		return DisableIOC, fmt.Errorf("sramGet(): %v", err)
+	if buf, err := mod.SRAM.readRange(7, 7); nil != err {
+		return DisableIOC, fmt.Errorf("SRAM.readRange(): %v", err)
 	} else {
 		edge := IOCEdge((buf[0] >> 5) & 0x03)
 		return edge, nil
@@ -1349,6 +1419,11 @@ func (mcp *MCP2221A) IOCGetConfig() (IOCEdge, error) {
 
 // -----------------------------------------------------------------------------
 // -- I²C ----------------------------------------------------------- [start] --
+
+// ModI2C contains the methods associated with the I²C module of the MCP2221A.
+type ModI2C struct {
+	*MCP2221A
+}
 
 // Constants associated with the I²C module.
 const (
@@ -1409,17 +1484,17 @@ func i2cStateTimeout(state byte) bool {
 		(i2cStateAddrTimeout == state)
 }
 
-// I2CSetConfig configures the I²C bus clock divider calculated from a given
-// baud rate (BPS). If in doubt, use global constant I2CBaudRate.
+// SetConfig configures the I²C bus clock divider calculated from a given baud
+// rate (BPS). If in doubt, use global constant I2CBaudRate.
 // These settings only affect the current device configuration and are not
 // retained after next startup/reset.
 //
 // Returns an error if the receiver is invalid, the given baud rate is invalid,
 // the set-parameters command could not be sent, or if an I²C transfer is
 // currently in-progress.
-func (mcp *MCP2221A) I2CSetConfig(baud uint32) error {
+func (mod *ModI2C) SetConfig(baud uint32) error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
@@ -1433,10 +1508,10 @@ func (mcp *MCP2221A) I2CSetConfig(baud uint32) error {
 	cmd[3] = 0x20
 	cmd[4] = byte(ClkHz/baud - 3)
 
-	if rsp, err := mcp.send(cmdSetParams, cmd); nil != err {
+	if rsp, err := mod.send(cmdSetParams, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
 	} else {
-		stat := statusParse(rsp)
+		stat := parseStatus(rsp)
 		if 0x21 == stat.i2cSpdChg {
 			return fmt.Errorf("transfer in progress")
 		}
@@ -1445,24 +1520,24 @@ func (mcp *MCP2221A) I2CSetConfig(baud uint32) error {
 	return nil
 }
 
-// I2CCancel sends a set-parameters command to cancel any ongoing I²C transfer
+// Cancel sends a set-parameters command to cancel any ongoing I²C transfer
 // currently in progress.
 //
 // Returns an error if the receiver is invalid, or if the command could not be
 // sent.
-func (mcp *MCP2221A) I2CCancel() error {
+func (mod *ModI2C) Cancel() error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
 	cmd := makeMsg()
 	cmd[2] = 0x10
 
-	if rsp, err := mcp.send(cmdSetParams, cmd); nil != err {
+	if rsp, err := mod.send(cmdSetParams, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
 	} else {
-		stat := statusParse(rsp)
+		stat := parseStatus(rsp)
 		if 0x10 == stat.i2cCancel {
 			time.Sleep(300 * time.Microsecond)
 		}
@@ -1471,7 +1546,7 @@ func (mcp *MCP2221A) I2CCancel() error {
 	return nil
 }
 
-// I2CWrite is the general-purpose function for writing raw data directly to the
+// Write is the general-purpose function for writing raw data directly to the
 // I²C data bus.
 // If argument stop is true, then an I²C STOP condition is generated on the bus
 // once the bytes transmitted equals the number bytes specified as parameter cnt
@@ -1482,9 +1557,9 @@ func (mcp *MCP2221A) I2CCancel() error {
 // read status message, could not cancel an existing I²C connection (if exists),
 // could not send command message, the I²C state machine enters an unrecoverable
 // state, or too many retries were attempted.
-func (mcp *MCP2221A) I2CWrite(stop bool, addr uint8, out []byte, cnt uint16) error {
+func (mod *ModI2C) Write(stop bool, addr uint8, out []byte, cnt uint16) error {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
@@ -1501,7 +1576,7 @@ func (mcp *MCP2221A) I2CWrite(stop bool, addr uint8, out []byte, cnt uint16) err
 		err  error
 	)
 
-	if stat, err = mcp.status(); nil != err {
+	if stat, err = mod.status(); nil != err {
 		return fmt.Errorf("status(): %v", err)
 	}
 
@@ -1509,8 +1584,8 @@ func (mcp *MCP2221A) I2CWrite(stop bool, addr uint8, out []byte, cnt uint16) err
 		if i2cStateNACK(stat.i2cState) {
 			return fmt.Errorf("I²C NACK from address (0x%02X)", addr)
 		}
-		if err := mcp.I2CCancel(); nil != err {
-			return fmt.Errorf("I2CCancel(): %v", err)
+		if err := mod.I2C.Cancel(); nil != err {
+			return fmt.Errorf("I2C.Cancel(): %v", err)
 		}
 	}
 
@@ -1543,7 +1618,7 @@ func (mcp *MCP2221A) I2CWrite(stop bool, addr uint8, out []byte, cnt uint16) err
 		retry := 0
 		for retry < i2cWriteRetry {
 			retry++
-			if rsp, err := mcp.send(sendCMD, cmd); nil != err {
+			if rsp, err := mod.send(sendCMD, cmd); nil != err {
 				if nil != rsp {
 					if i2cStateNACK(rsp[2]) {
 						return fmt.Errorf("send(): I²C NACK from address (0x%02X)", addr)
@@ -1558,7 +1633,7 @@ func (mcp *MCP2221A) I2CWrite(stop bool, addr uint8, out []byte, cnt uint16) err
 			} else {
 				partial := true
 				for partial {
-					if stat, err := mcp.status(); nil != err {
+					if stat, err := mod.status(); nil != err {
 						return fmt.Errorf("status(): %v", err)
 					} else {
 						partial = i2cStatePartialData == stat.i2cState
@@ -1576,7 +1651,7 @@ func (mcp *MCP2221A) I2CWrite(stop bool, addr uint8, out []byte, cnt uint16) err
 	retry = 0
 	for retry < i2cWriteRetry {
 		retry++
-		if stat, err := mcp.status(); nil != err {
+		if stat, err := mod.status(); nil != err {
 			return fmt.Errorf("status(): %v", err)
 		} else {
 			if WordClr == stat.i2cState {
@@ -1598,20 +1673,20 @@ func (mcp *MCP2221A) I2CWrite(stop bool, addr uint8, out []byte, cnt uint16) err
 	return nil
 }
 
-// I2CRead is the general purpose function for reading raw data directly from
-// the I²C data bus.
+// Read is the general purpose function for reading raw data directly from the
+// I²C data bus.
 // If argument rep is true, a REP-START condition is generated (instead of the
 // usual START condition) to indicate we are reading data from a slave
-// subaddress configured before this call to I2CRead().
+// subaddress configured before this call to Read().
 //
 // Returns the data slice of length cnt (bytes) read from the bus if there was
 // no error. Otherwise, an error is returned if any of the following occur:
 // invalid receiver, could not read status message, could not cancel an existing
 // I²C connection (if exists), could not send command message, the I²C state
 // machine enters an unrecoverable state.
-func (mcp *MCP2221A) I2CRead(rep bool, addr uint8, cnt uint16) ([]byte, error) {
+func (mod *ModI2C) Read(rep bool, addr uint8, cnt uint16) ([]byte, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return nil, err
 	}
 
@@ -1624,7 +1699,7 @@ func (mcp *MCP2221A) I2CRead(rep bool, addr uint8, cnt uint16) ([]byte, error) {
 		err  error
 	)
 
-	if stat, err = mcp.status(); nil != err {
+	if stat, err = mod.status(); nil != err {
 		return nil, fmt.Errorf("status(): %v", err)
 	}
 
@@ -1632,8 +1707,8 @@ func (mcp *MCP2221A) I2CRead(rep bool, addr uint8, cnt uint16) ([]byte, error) {
 		if i2cStateNACK(stat.i2cState) {
 			return nil, fmt.Errorf("I²C NACK from address (0x%02X)", addr)
 		}
-		if err := mcp.I2CCancel(); nil != err {
-			return nil, fmt.Errorf("I2CCancel(): %v", err)
+		if err := mod.I2C.Cancel(); nil != err {
+			return nil, fmt.Errorf("I2C.Cancel(): %v", err)
 		}
 	}
 
@@ -1647,7 +1722,7 @@ func (mcp *MCP2221A) I2CRead(rep bool, addr uint8, cnt uint16) ([]byte, error) {
 		cmdID = cmdI2CReadRepStart
 	}
 
-	if _, err := mcp.send(cmdID, cmd); nil != err {
+	if _, err := mod.send(cmdID, cmd); nil != err {
 		return nil, fmt.Errorf("send(): %v", err)
 	}
 
@@ -1665,7 +1740,7 @@ func (mcp *MCP2221A) I2CRead(rep bool, addr uint8, cnt uint16) ([]byte, error) {
 		for retry < i2cReadRetry {
 			retry++
 			cmd := makeMsg()
-			if rsp, err = mcp.send(cmdI2CReadGetData, cmd); nil != err {
+			if rsp, err = mod.send(cmdI2CReadGetData, cmd); nil != err {
 				return nil, fmt.Errorf("send(): %v", err)
 			} else {
 				if i2cStatePartialData == rsp[1] || i2cStateReadError == rsp[3] {
@@ -1700,7 +1775,7 @@ func (mcp *MCP2221A) I2CRead(rep bool, addr uint8, cnt uint16) ([]byte, error) {
 	return in, nil
 }
 
-// I2CReadReg performs a standard write-then-read I²C operation as a convenience
+// ReadReg performs a standard write-then-read I²C operation as a convenience
 // for the common case of reading registers.
 // This variant is for target devices with 8-bit subaddress widths (i.e. the
 // size of the register pointer).
@@ -1709,21 +1784,21 @@ func (mcp *MCP2221A) I2CRead(rep bool, addr uint8, cnt uint16) ([]byte, error) {
 // read failures occurred.
 //
 // See also I2CReadReg16() for 16-bit subaddressing devices.
-func (mcp *MCP2221A) I2CReadReg(addr uint8, reg uint8, cnt uint16) ([]byte, error) {
+func (mod *ModI2C) ReadReg(addr uint8, reg uint8, cnt uint16) ([]byte, error) {
 
-	if err := mcp.I2CWrite(false, addr, []byte{reg}, 1); nil != err {
-		return nil, fmt.Errorf("I2CWrite(): %v", err)
+	if err := mod.I2C.Write(false, addr, []byte{reg}, 1); nil != err {
+		return nil, fmt.Errorf("I2C.Write(): %v", err)
 	}
 
-	if reg, err := mcp.I2CRead(true, addr, cnt); nil != err {
-		return nil, fmt.Errorf("I2CRead(): %v", err)
+	if reg, err := mod.I2C.Read(true, addr, cnt); nil != err {
+		return nil, fmt.Errorf("I2C.Read(): %v", err)
 	} else {
 		return reg, nil
 	}
 }
 
-// I2CReadReg16 performs a standard write-then-read I²C operation as a
-// convenience for the common case of reading registers.
+// ReadReg16 performs a standard write-then-read I²C operation as a convenience
+// for the common case of reading registers.
 // This variant is for target devices with 16-bit subaddress widths (i.e. the
 // size of the register pointer). If argument msb is true, then the buffer
 // containing the register pointer is reversed so that the MSByte is at buffer
@@ -1733,52 +1808,52 @@ func (mcp *MCP2221A) I2CReadReg(addr uint8, reg uint8, cnt uint16) ([]byte, erro
 // read failures occurred.
 //
 // See also I2CReadReg() for 8-bit subaddressing devices.
-func (mcp *MCP2221A) I2CReadReg16(addr uint8, reg uint16, msb bool, cnt uint16) ([]byte, error) {
+func (mod *ModI2C) ReadReg16(addr uint8, reg uint16, msb bool, cnt uint16) ([]byte, error) {
 
 	buf := []byte{byte(reg & 0xFF), byte((reg >> 8) & 0xFF)}
 	if msb {
 		buf = []byte{buf[1], buf[0]}
 	}
 
-	if err := mcp.I2CWrite(false, addr, buf, 2); nil != err {
-		return nil, fmt.Errorf("I2CWrite(): %v", err)
+	if err := mod.I2C.Write(false, addr, buf, 2); nil != err {
+		return nil, fmt.Errorf("I2C.Write(): %v", err)
 	}
 
-	if reg, err := mcp.I2CRead(true, addr, cnt); nil != err {
-		return nil, fmt.Errorf("I2CRead(): %v", err)
+	if reg, err := mod.I2C.Read(true, addr, cnt); nil != err {
+		return nil, fmt.Errorf("I2C.Read(): %v", err)
 	} else {
 		return reg, nil
 	}
 }
 
-// I2CReadReady tests if the device needs to perform a read from a requested
+// ReadReady tests if the device needs to perform a read from a requested
 // slave device.
 //
 // Returns false and an error if the receiver is invalid or if the I²C state
 // machine status could not be read.
-func (mcp *MCP2221A) I2CReadReady() (bool, error) {
+func (mod *ModI2C) ReadReady() (bool, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return false, err
 	}
 
-	if stat, err := mcp.status(); nil != err {
+	if stat, err := mod.status(); nil != err {
 		return false, fmt.Errorf("status(): %v", err)
 	} else {
 		return stat.i2cReadPnd > 0, nil
 	}
 }
 
-// I2CScan scans a given address range and attempts to communicate with each
+// Scan scans a given address range and attempts to communicate with each
 // device, ignoring any failures caused by non-existent targets.
 //
 // Returns a byte slice of 7-bit addresses known to be online and able to be
 // communicated with.
 // Returns a nil slice and error if the receiver is invalid or given address
 // range is invalid.
-func (mcp *MCP2221A) I2CScan(start uint8, stop uint8) ([]uint8, error) {
+func (mod *ModI2C) Scan(start uint8, stop uint8) ([]uint8, error) {
 
-	if ok, err := mcp.valid(); !ok {
+	if ok, err := mod.valid(); !ok {
 		return nil, err
 	}
 
@@ -1788,7 +1863,7 @@ func (mcp *MCP2221A) I2CScan(start uint8, stop uint8) ([]uint8, error) {
 
 	found := []byte{}
 	for addr := start; addr <= stop; addr++ {
-		if err := mcp.I2CWrite(true, addr, []byte{0x00}, 1); nil == err {
+		if err := mod.I2C.Write(true, addr, []byte{0x00}, 1); nil == err {
 			found = append(found, byte(addr))
 		}
 	}

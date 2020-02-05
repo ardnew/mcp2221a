@@ -25,14 +25,14 @@ func main() {
 	pin := byte(1)
 
 	// set pin 1 to ADC mode
-	if err := m.ADCSetConfig(pin, mcp.VRefDefault); nil != err {
-		log.Fatalf("ADCSetConfig(): %v", err)
+	if err := m.ADC.SetConfig(pin, mcp.VRefDefault); nil != err {
+		log.Fatalf("ADC.SetConfig(): %v", err)
 	}
 
 	// repeatedly read and print the ADC converted value every 100 ms
 	for {
-		if val, err := m.ADCRead(pin); nil != err {
-			log.Fatalf("ADCRead(): %v", err)
+		if val, err := m.ADC.Read(pin); nil != err {
+			log.Fatalf("ADC.Read(): %v", err)
 		} else {
 			log.Printf("Pin[%d] = %d", pin, val)
 		}
