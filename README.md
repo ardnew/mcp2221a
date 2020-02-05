@@ -4,14 +4,14 @@
 [docurl]:https://godoc.org/github.com/ardnew/mcp2221a
 
 # mcp2221a
-Go [module](https://blog.golang.org/using-go-modules) for the MCP2221A USB to I²C/UART Protocol Converter with GPIO (**[datasheet](http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf)**)
+Go **[module](https://blog.golang.org/using-go-modules)** for the MCP2221A USB to I²C/UART Protocol Converter with GPIO (**[datasheet](http://ww1.microchip.com/downloads/en/DeviceDoc/20005565B.pdf)**)
 
 ## Features
 - [x] **[Fully-documented API](https://godoc.org/github.com/ardnew/mcp2221a)**
-- [x] Compliant Go module (read more about modules [here](https://blog.golang.org/using-go-modules))
+- [x] Compliant Go module (see below: **[Installation](#installation)**)
 - [x] Supports multiple MCP2221A devices simultaneously
 - [x] GPIO input/output
-   - All dedicated and alternate functions (see: [GP operating modes](#gp-operating-modes))
+   - All dedicated and alternate functions (see below: **[GP operating modes](#gp-operating-modes)**)
 - [x] I²C read/write (configurable bit rate, up to 400 kHz)
 - [x] ADC read (10-bit, 3 channels/pins), configurable reference voltage
 - [x] DAC write (5-bit, 2 pins, shared output), configurable reference voltage and default output
@@ -24,7 +24,7 @@ Note that **UART support** is provided natively through the USB interface as a C
 
 #### Dependencies
 - [github.com/karalabe/hid](https://github.com/karalabe/hid) - USB HID interface
-   
+
 ## Installation
 If you are not using Go modules (or are unsure), just use the `go` built-in package manager:
 ```sh
@@ -56,18 +56,39 @@ See [examples](examples) for some demo applications:
 
 ## Notes
 #### Where to get one
-Adafruit makes a breakout with a fancy USB-C connector: https://www.adafruit.com/product/4471
+Adafruit makes a crazy cheap, snazzy breakout with built-in 3.3V regulator (with VBUS/5V and 3.3V output pins), an I²C Qwiic/Stemma QT connector (as well as the regular SDA/SCL pins), and best of all a USB-C connector as its programming interface:
+- https://www.adafruit.com/product/4471
+- Only _**$6.50 USD**_ (5 Feb 2020) ?!!
 
 #### GP operating modes
-The available operating modes for each GP pin:
-```sh
-#  Mode      | GP0       GP1       GP2      GP3
-#  --------- + ------- - ------- - ------ - -------
-#  GPIO      | GPIO      GPIO      GPIO     GPIO
-#  Dedicated | SSPND     CLK OUT   USBCFG   LED_I2C
-#  Alt 1     | LED URX   ADC1      ADC2     ADC3
-#  Alt 2     |           LED UTX   DAC1     DAC2
-#  Alt 3     |           IOC                  
-#  --------- + ------- - ------- - ------ - -------
-```
+All of the available operating modes for the general-purpose (GP) pins:
 
+- `GPIO`: Operate as a digital input or a digital output pin.
+- `SSPND`: Reflects the USB state (`Suspend`/`Resume`); active-low when `Suspend` has been issued by the USB host, and driven high on `Resume`.
+   - This lets the application react (e.g enter a low-power mode) when USB communication has been suspended or resumed.
+   - The pin value can be inverted (high on `Suspend`, low on `Resume`) using the `Flash` module.
+- `USBCFG`: Starts out low during power-up/reset and goes high after successfully enumerating on the USB host.
+   - The pin will also go low when in `Suspend` mode and high on `Resume`.
+   - The pin value can be inverted (start high, low after enumeration) using the `Flash` module.
+- `LED_URX`,`LED_UTX`: Indicates UART (Rx/Tx) data being received/transmitted by pulsing the pin high for a few milliseconds.
+   - The pin value can be inverted (pulse low on receive/transmit) using the `Flash` module.
+- `LED_I2C`: Indicates I²C (Rx **and** Tx) data being received **and** transmitted by pulsing the pin high for a few milliseconds.
+   - The pin value can be inverted (pulse low on receive **and** transmit) using the `Flash` module.
+- `CLKR`: Digital output, providing a clock signal derived from the device’s internal clock.
+   - The clock’s nominal frequency is 12 MHz ± 0.25%.
+   - Other clock values and duty cycles can be configured using the `Flash` module.
+- `IOC`: Digital input ("Interrupt-on-Change") that is sensitive to rising, falling, or both edges.
+   - The desired edge can be configured using the `Flash` and `SRAM` modules.
+
+However, only certain pins support each of these modes — per the following matrix:
+```sh
+#                  / ———————————— + ———————————— + ———————————— + ———————————— \
+#                  |     GP0      |     GP1      |     GP2      |     GP3      |
+#    / ——————————— + ============ + ============ + ============ + ============ +
+#    |       GPIO  |     GPIO     |     GPIO     |     GPIO     |     GPIO     |
+#    |  Dedicated  |     SSPND    |     CLKR     |    USBCFG    |    LED_I2C   |
+#    |      Alt 1  |    LED_URX   |     ADC1     |     ADC2     |     ADC3     |
+#    |      Alt 2  |      --      |    LED_UTX   |     DAC1     |     DAC2     |
+#    |      Alt 3  |      --      |     IOC      |      --      |      --      |
+#    \ ——————————— + ———————————— + ———————————— + ———————————— + ———————————— /
+```

@@ -120,7 +120,7 @@ const pinIOC byte = 1
 // TODO: add exported configuration function
 const pinSSPND byte = 0
 
-// pinCLKOUT defines the pin which supports the CLK OUT GP dedicated function.
+// pinCLKOUT defines the pin which supports the CLKR GP dedicated function.
 // TODO: add exported configuration function
 const pinCLKOUT byte = 1
 
@@ -792,9 +792,9 @@ const (
 
 	// GPIO operation modes:         GP0       GP1       GP2      GP3
 	ModeGPIO     GPIOMode = 0x00 //  GPIO      GPIO      GPIO     GPIO
-	ModeDediFunc GPIOMode = 0x01 //  SSPND     CLK OUT   USBCFG   LED_I2C
-	ModeAltFunc0 GPIOMode = 0x02 //  LED URX   ADC1      ADC2     ADC3
-	ModeAltFunc1 GPIOMode = 0x03 //  --        LED UTX   DAC1     DAC2
+	ModeDediFunc GPIOMode = 0x01 //  SSPND     CLKR      USBCFG   LED_I2C
+	ModeAltFunc0 GPIOMode = 0x02 //  LED_URX   ADC1      ADC2     ADC3
+	ModeAltFunc1 GPIOMode = 0x03 //  --        LED_UTX   DAC1     DAC2
 	ModeAltFunc2 GPIOMode = 0x04 //  --        IOC       --       --
 	ModeInvalid  GPIOMode = 0xEE // invalid mode is used as error condition
 
