@@ -178,13 +178,13 @@ type MCP2221A struct {
 	PID    uint16
 
 	// each of the on-chip modules acting as primary functional interfaces.
-	SRAM  *ModSRAM  // volatile active settings, not restored on startup/reset
-	Flash *ModFlash // non-volatile inactive settings, restored on startup/reset
-	GPIO  *ModGPIO  // 4x GPIO pins, each also have unique special functions
-	ADC   *ModADC   // 3x 10-bit analog-to-digital converter
-	DAC   *ModDAC   // 1x 5-bit digital-to-analog converter (avail on 2 pins)
-	IOC   *ModIOC   // input interrupt detection (used with SSPND)
-	I2C   *ModI2C   // dedicated I²C SDA/SCL pins, up to 400 kHz
+	SRAM  *SRAM  // volatile active settings, not restored on startup/reset
+	Flash *Flash // non-volatile inactive settings, restored on startup/reset
+	GPIO  *GPIO  // 4x GPIO pins, each also have unique special functions
+	ADC   *ADC   // 3x 10-bit analog-to-digital converter
+	DAC   *DAC   // 1x 5-bit digital-to-analog converter (avail on 2 pins)
+	IOC   *IOC   // input interrupt detection (used with SSPND)
+	I2C   *I2C   // dedicated I²C SDA/SCL pins, up to 400 kHz
 }
 
 // AttachedDevices returns a slice of all connected USB HID device descriptors
@@ -225,13 +225,7 @@ func New(idx byte, vid uint16, pid uint16) (*MCP2221A, error) {
 	// each module embeds the common *MCP2221A instance so that the modules can
 	// refer to each others' functions.
 	mcp.SRAM, mcp.Flash, mcp.GPIO, mcp.ADC, mcp.DAC, mcp.IOC, mcp.I2C =
-		&ModSRAM{mcp},
-		&ModFlash{mcp},
-		&ModGPIO{mcp},
-		&ModADC{mcp},
-		&ModDAC{mcp},
-		&ModIOC{mcp},
-		&ModI2C{mcp}
+		&SRAM{mcp}, &Flash{mcp}, &GPIO{mcp}, &ADC{mcp}, &DAC{mcp}, &IOC{mcp}, &I2C{mcp}
 
 	var err error
 	if mcp.Device, err = info[idx].Open(); nil != err {
@@ -453,9 +447,9 @@ func (mcp *MCP2221A) status() (*status, error) {
 // -----------------------------------------------------------------------------
 // -- SRAM ---------------------------------------------------------- [start] --
 
-// ModSRAM contains the methods associated with the SRAM component of the
+// SRAM contains the methods associated with the SRAM component of the
 // MCP2221A.
-type ModSRAM struct {
+type SRAM struct {
 	*MCP2221A
 }
 
@@ -464,7 +458,7 @@ type ModSRAM struct {
 //
 // Returns a nil slice and error if the receiver is invalid, the given range is
 // invalid, or if the configuration command could not be sent.
-func (mod *ModSRAM) read() ([]byte, error) {
+func (mod *SRAM) read() ([]byte, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return nil, err
@@ -483,7 +477,7 @@ func (mod *ModSRAM) read() ([]byte, error) {
 //
 // Returns a nil slice and error if the receiver is invalid, the given range is
 // invalid, or if the configuration command could not be sent.
-func (mod *ModSRAM) readRange(start byte, stop byte) ([]byte, error) {
+func (mod *SRAM) readRange(start byte, stop byte) ([]byte, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return nil, err
@@ -506,9 +500,9 @@ func (mod *ModSRAM) readRange(start byte, stop byte) ([]byte, error) {
 // -----------------------------------------------------------------------------
 // -- FLASH --------------------------------------------------------- [start] --
 
-// ModFlash contains the methods associated with the flash memory component of
+// Flash contains the methods associated with the flash memory component of
 // the MCP2221A.
-type ModFlash struct {
+type Flash struct {
 	*MCP2221A
 }
 
@@ -594,7 +588,7 @@ func parseChipSettings(msg []byte) *chipSettings {
 //
 // Returns nil and an error if the receiver is invalid, subcommand is invalid,
 // or if the flash read command could not be sent.
-func (mod *ModFlash) read(sub byte) ([]byte, error) {
+func (mod *Flash) read(sub byte) ([]byte, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return nil, err
@@ -619,7 +613,7 @@ func (mod *ModFlash) read(sub byte) ([]byte, error) {
 //
 // Returns an error if the receiver is invalid, subcommand is invalid, or if the
 // flash write command could not be sent.
-func (mod *ModFlash) write(sub byte, data []byte) error {
+func (mod *Flash) write(sub byte, data []byte) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -645,7 +639,7 @@ func (mod *ModFlash) write(sub byte, data []byte) error {
 //
 // Returns nil with an error if the receiver is invalid or could not read from
 // flash memory.
-func (mod *ModFlash) chipSettings() ([]byte, error) {
+func (mod *Flash) chipSettings() ([]byte, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return nil, err
@@ -667,7 +661,7 @@ func (mod *ModFlash) chipSettings() ([]byte, error) {
 //
 // Returns nil with an error if the receiver is invalid or could not read from
 // flash memory.
-func (mod *ModFlash) gpioSettings() ([]byte, error) {
+func (mod *Flash) gpioSettings() ([]byte, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return nil, err
@@ -709,7 +703,7 @@ func parseFlashString(b []byte) string {
 //
 // Returns an empty string and error if the receiver is invalid or if the flash
 // configuration could not be read.
-func (mod *ModFlash) USBManufacturer() (string, error) {
+func (mod *Flash) USBManufacturer() (string, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return "", err
@@ -727,7 +721,7 @@ func (mod *ModFlash) USBManufacturer() (string, error) {
 //
 // Returns an empty string and error if the receiver is invalid or if the flash
 // configuration could not be read.
-func (mod *ModFlash) USBProduct() (string, error) {
+func (mod *Flash) USBProduct() (string, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return "", err
@@ -745,7 +739,7 @@ func (mod *ModFlash) USBProduct() (string, error) {
 //
 // Returns an empty string and error if the receiver is invalid or if the flash
 // configuration could not be read.
-func (mod *ModFlash) USBSerialNo() (string, error) {
+func (mod *Flash) USBSerialNo() (string, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return "", err
@@ -763,7 +757,7 @@ func (mod *ModFlash) USBSerialNo() (string, error) {
 //
 // Returns an empty string and error if the receiver is invalid or if the flash
 // configuration could not be read.
-func (mod *ModFlash) FactorySerialNo() (string, error) {
+func (mod *Flash) FactorySerialNo() (string, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return "", err
@@ -786,8 +780,8 @@ func (mod *ModFlash) FactorySerialNo() (string, error) {
 // -----------------------------------------------------------------------------
 // -- GPIO ---------------------------------------------------------- [start] --
 
-// ModGPIO contains the methods associated with the GPIO module of the MCP2221A.
-type ModGPIO struct {
+// GPIO contains the methods associated with the GPIO module of the MCP2221A.
+type GPIO struct {
 	*MCP2221A
 }
 
@@ -826,7 +820,7 @@ const (
 // Returns an error if the receiver is invalid, the pin index is invalid, the
 // current configuration could not be read, or if the new configuration could
 // not be sent.
-func (mod *ModGPIO) SetConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) error {
+func (mod *GPIO) SetConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -864,7 +858,7 @@ func (mod *ModGPIO) SetConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) er
 // Returns an error if the receiver is invalid, the pin index is invalid, the
 // current configuration could not be read, or if the new configuration could
 // not be sent.
-func (mod *ModGPIO) FlashConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) error {
+func (mod *GPIO) FlashConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -900,7 +894,7 @@ func (mod *ModGPIO) FlashConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) 
 //
 // Returns an error if the receiver is invalid, the pin index is invalid, or if
 // the current configuration could not be read.
-func (mod *ModGPIO) GetConfig(pin byte) (byte, GPIOMode, GPIODir, error) {
+func (mod *GPIO) GetConfig(pin byte) (byte, GPIOMode, GPIODir, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return WordClr, ModeInvalid, DirInvalid, err
@@ -924,7 +918,7 @@ func (mod *ModGPIO) GetConfig(pin byte) (byte, GPIOMode, GPIODir, error) {
 //
 // Returns an error if the receiver is invalid, the pin index is invalid, or if
 // the pin value could not be set (e.g. pin not configured for GPIO operation).
-func (mod *ModGPIO) Set(pin byte, val byte) error {
+func (mod *GPIO) Set(pin byte, val byte) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -953,7 +947,7 @@ func (mod *ModGPIO) Set(pin byte, val byte) error {
 //
 // Returns an error if the receiver is invalid, the pin index is invalid, or if
 // the pin value could not be set (e.g. pin not configured for GPIO operation).
-func (mod *ModGPIO) Get(pin byte) (byte, error) {
+func (mod *GPIO) Get(pin byte) (byte, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return WordClr, err
@@ -982,8 +976,8 @@ func (mod *ModGPIO) Get(pin byte) (byte, error) {
 // -----------------------------------------------------------------------------
 // -- ADC ----------------------------------------------------------- [start] --
 
-// ModADC contains the methods associated with the ADC module of the MCP2221A.
-type ModADC struct {
+// ADC contains the methods associated with the ADC module of the MCP2221A.
+type ADC struct {
 	*MCP2221A
 }
 
@@ -994,7 +988,7 @@ type ModADC struct {
 //
 // Returns an error if the receiver is invalid, pin does not have an associated
 // ADC channel, ref is invalid, or if the new configuration could not be sent.
-func (mod *ModADC) SetConfig(pin byte, ref VRef) error {
+func (mod *ADC) SetConfig(pin byte, ref VRef) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -1035,7 +1029,7 @@ func (mod *ModADC) SetConfig(pin byte, ref VRef) error {
 //
 // Returns an error if the receiver is invalid, pin does not have an associated
 // ADC channel, ref is invalid, or if the new configuration could not be sent.
-func (mod *ModADC) FlashConfig(pin byte, ref VRef) error {
+func (mod *ADC) FlashConfig(pin byte, ref VRef) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -1076,7 +1070,7 @@ func (mod *ModADC) FlashConfig(pin byte, ref VRef) error {
 //
 // Returns VRefDefault reference voltage and an error if the receiver is
 // invalid, pin is invalid, or if the current configuration could not be read.
-func (mod *ModADC) GetConfig(pin byte) (VRef, error) {
+func (mod *ADC) GetConfig(pin byte) (VRef, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return VRefDefault, err
@@ -1104,7 +1098,7 @@ func (mod *ModADC) GetConfig(pin byte) (VRef, error) {
 // Returns the converted analog value as an unsigned 16-bit integer.
 // Returns an error if the receiver is invalid, VRef is invalid, or if the new
 // configuration could not be sent.
-func (mod *ModADC) Read(pin byte) (uint16, error) {
+func (mod *ADC) Read(pin byte) (uint16, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return 0, err
@@ -1136,8 +1130,8 @@ func (mod *ModADC) Read(pin byte) (uint16, error) {
 // -----------------------------------------------------------------------------
 // -- DAC ----------------------------------------------------------- [start] --
 
-// ModDAC contains the methods associated with the DAC module of the MCP2221A.
-type ModDAC struct {
+// DAC contains the methods associated with the DAC module of the MCP2221A.
+type DAC struct {
 	*MCP2221A
 }
 
@@ -1148,7 +1142,7 @@ type ModDAC struct {
 //
 // Returns an error if the receiver is invalid, pin does not have an associated
 // DAC output, ref is invalid, or if the new configuration could not be sent.
-func (mod *ModDAC) SetConfig(pin byte, ref VRef) error {
+func (mod *DAC) SetConfig(pin byte, ref VRef) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -1189,7 +1183,7 @@ func (mod *ModDAC) SetConfig(pin byte, ref VRef) error {
 //
 // Returns an error if the receiver is invalid, pin does not have an associated
 // DAC output, ref is invalid, or if the new configuration could not be sent.
-func (mod *ModDAC) FlashConfig(pin byte, ref VRef, val byte) error {
+func (mod *DAC) FlashConfig(pin byte, ref VRef, val byte) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -1230,7 +1224,7 @@ func (mod *ModDAC) FlashConfig(pin byte, ref VRef, val byte) error {
 // Returns WordClr power-up value, VRefDefault reference voltage, and an error
 // if the receiver is invalid, pin is invalid or is not configured for DAC
 // operation, or if the current configuration could not be read.
-func (mod *ModDAC) GetConfig(pin byte) (byte, VRef, error) {
+func (mod *DAC) GetConfig(pin byte) (byte, VRef, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return WordClr, VRefDefault, err
@@ -1261,7 +1255,7 @@ func (mod *ModDAC) GetConfig(pin byte) (byte, VRef, error) {
 //
 // Returns an error if the receiver is invalid or if the converted value could
 // not be sent.
-func (mod *ModDAC) Write(val uint16) error {
+func (mod *DAC) Write(val uint16) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -1285,8 +1279,8 @@ func (mod *ModDAC) Write(val uint16) error {
 // -----------------------------------------------------------------------------
 // -- IOC ----------------------------------------------------------- [start] --
 
-// ModIOC contains the methods associated with the IOC module of the MCP2221A.
-type ModIOC struct {
+// IOC contains the methods associated with the IOC module of the MCP2221A.
+type IOC struct {
 	*MCP2221A
 }
 
@@ -1307,7 +1301,7 @@ const (
 // Returns an error if the receiver is invalid, the pin's operation mode could
 // not be set, the edge configuration could not be set, or if the interrupt flag
 // could not be cleared.
-func (mod *ModIOC) SetConfig(edge IOCEdge) error {
+func (mod *IOC) SetConfig(edge IOCEdge) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -1367,7 +1361,7 @@ func (mod *ModIOC) SetConfig(edge IOCEdge) error {
 // Returns an error if the receiver is invalid, the pin's operation mode could
 // not be set, the edge configuration could not be set, or if the interrupt flag
 // could not be cleared.
-func (mod *ModIOC) FlashConfig(edge IOCEdge) error {
+func (mod *IOC) FlashConfig(edge IOCEdge) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -1400,7 +1394,7 @@ func (mod *ModIOC) FlashConfig(edge IOCEdge) error {
 //
 // Returns DisableIOC detection edge and an error if the receiver is invalid or
 // if the current configuration could not be read.
-func (mod *ModIOC) GetConfig() (IOCEdge, error) {
+func (mod *IOC) GetConfig() (IOCEdge, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return DisableIOC, err
@@ -1420,8 +1414,8 @@ func (mod *ModIOC) GetConfig() (IOCEdge, error) {
 // -----------------------------------------------------------------------------
 // -- I²C ----------------------------------------------------------- [start] --
 
-// ModI2C contains the methods associated with the I²C module of the MCP2221A.
-type ModI2C struct {
+// I2C contains the methods associated with the I²C module of the MCP2221A.
+type I2C struct {
 	*MCP2221A
 }
 
@@ -1492,7 +1486,7 @@ func i2cStateTimeout(state byte) bool {
 // Returns an error if the receiver is invalid, the given baud rate is invalid,
 // the set-parameters command could not be sent, or if an I²C transfer is
 // currently in-progress.
-func (mod *ModI2C) SetConfig(baud uint32) error {
+func (mod *I2C) SetConfig(baud uint32) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -1525,7 +1519,7 @@ func (mod *ModI2C) SetConfig(baud uint32) error {
 //
 // Returns an error if the receiver is invalid, or if the command could not be
 // sent.
-func (mod *ModI2C) Cancel() error {
+func (mod *I2C) Cancel() error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -1557,7 +1551,7 @@ func (mod *ModI2C) Cancel() error {
 // read status message, could not cancel an existing I²C connection (if exists),
 // could not send command message, the I²C state machine enters an unrecoverable
 // state, or too many retries were attempted.
-func (mod *ModI2C) Write(stop bool, addr uint8, out []byte, cnt uint16) error {
+func (mod *I2C) Write(stop bool, addr uint8, out []byte, cnt uint16) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -1684,7 +1678,7 @@ func (mod *ModI2C) Write(stop bool, addr uint8, out []byte, cnt uint16) error {
 // invalid receiver, could not read status message, could not cancel an existing
 // I²C connection (if exists), could not send command message, the I²C state
 // machine enters an unrecoverable state.
-func (mod *ModI2C) Read(rep bool, addr uint8, cnt uint16) ([]byte, error) {
+func (mod *I2C) Read(rep bool, addr uint8, cnt uint16) ([]byte, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return nil, err
@@ -1784,7 +1778,7 @@ func (mod *ModI2C) Read(rep bool, addr uint8, cnt uint16) ([]byte, error) {
 // read failures occurred.
 //
 // See also I2CReadReg16() for 16-bit subaddressing devices.
-func (mod *ModI2C) ReadReg(addr uint8, reg uint8, cnt uint16) ([]byte, error) {
+func (mod *I2C) ReadReg(addr uint8, reg uint8, cnt uint16) ([]byte, error) {
 
 	if err := mod.I2C.Write(false, addr, []byte{reg}, 1); nil != err {
 		return nil, fmt.Errorf("I2C.Write(): %v", err)
@@ -1808,7 +1802,7 @@ func (mod *ModI2C) ReadReg(addr uint8, reg uint8, cnt uint16) ([]byte, error) {
 // read failures occurred.
 //
 // See also I2CReadReg() for 8-bit subaddressing devices.
-func (mod *ModI2C) ReadReg16(addr uint8, reg uint16, msb bool, cnt uint16) ([]byte, error) {
+func (mod *I2C) ReadReg16(addr uint8, reg uint16, msb bool, cnt uint16) ([]byte, error) {
 
 	buf := []byte{byte(reg & 0xFF), byte((reg >> 8) & 0xFF)}
 	if msb {
@@ -1831,7 +1825,7 @@ func (mod *ModI2C) ReadReg16(addr uint8, reg uint16, msb bool, cnt uint16) ([]by
 //
 // Returns false and an error if the receiver is invalid or if the I²C state
 // machine status could not be read.
-func (mod *ModI2C) ReadReady() (bool, error) {
+func (mod *I2C) ReadReady() (bool, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return false, err
@@ -1851,7 +1845,7 @@ func (mod *ModI2C) ReadReady() (bool, error) {
 // communicated with.
 // Returns a nil slice and error if the receiver is invalid or given address
 // range is invalid.
-func (mod *ModI2C) Scan(start uint8, stop uint8) ([]uint8, error) {
+func (mod *I2C) Scan(start uint8, stop uint8) ([]uint8, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return nil, err
