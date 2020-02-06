@@ -22,7 +22,7 @@ const (
 	VersionPkg = "mcp2221a"
 	VersionMaj = 0
 	VersionMin = 1
-	VersionPch = 0
+	VersionPch = 1
 )
 
 // Version returns the SemVer-compatible version string of this package.
@@ -105,28 +105,45 @@ func isVRefValid(v VRef) bool {
 // IOCEdge represents the edge which triggers an interrupt.
 type IOCEdge byte
 
-// pinADC maps GPIO pin (0-3) to its respective ADC channel (0-2). if the
-// pin does not have an associated ADC channel, the key is not defined.
-var pinADC = map[byte]byte{1: 0, 2: 1, 3: 2}
+// chanADC maps GPIO pin (0-3) to its respective ADC channel (0-2). if the pin
+// does not have an associated ADC channel, the key is not defined.
+var chanADC = map[byte]byte{1: 0, 2: 1, 3: 2}
 
-// pinDAC maps GPIO pin (0-3) to its respective DAC output (0-1). if the
-// pin does not have an associated DAC output, the key is not defined.
-var pinDAC = map[byte]byte{2: 0, 3: 1}
+// outpDAC maps GPIO pin (0-3) to its respective DAC output (0-1). if the pin
+// does not have an associated DAC output, the key is not defined.
+var outpDAC = map[byte]byte{2: 0, 3: 1}
 
-// pinIOC defines the pin which supports interrupt detection GP alternate func.
-const pinIOC byte = 1
+// Constants defining the pins capable of the unique GP dedicated/alternate
+// functions.
+const (
+	// pinIOC defines the pin which supports interrupt detection GP alternate
+	// function.
+	pinIOC byte = 1
 
-// pinSSPND defines the pin which supports the SSPND GP dedicated function.
-// TODO: add exported configuration function
-const pinSSPND byte = 0
+	// pinSSPND defines the pin which supports the SSPND GP dedicated function.
+	// TODO: add exported configuration function
+	pinSSPND byte = 0
 
-// pinCLKOUT defines the pin which supports the CLKR GP dedicated function.
-// TODO: add exported configuration function
-const pinCLKOUT byte = 1
+	// pinCLKOUT defines the pin which supports the CLKR GP dedicated function.
+	// TODO: add exported configuration function
+	pinCLKOUT byte = 1
 
-// pinUSBCFG defines the pin which supports the USBCFG GP dedicated function.
-// TODO: add exported configuration function
-const pinUSBCFG byte = 2
+	// pinUSBCFG defines the pin which supports the USBCFG GP dedicated function.
+	// TODO: add exported configuration function
+	pinUSBCFG byte = 2
+
+	// pinLEDI2C defines the pin which supports the LED_I2C GP dedicated function.
+	// TODO: add exported configuration function
+	pinLEDI2C byte = 3
+
+	// pinLEDURx defines the pin which supports the LED_URX GP alternate function.
+	// TODO: add exported configuration function
+	pinLEDURx byte = 0
+
+	// pinLEDUTx defines the pin which supports the LED_UTX GP alternate function.
+	// TODO: add exported configuration function
+	pinLEDUTx byte = 1
+)
 
 // Constants for all recognized commands (and responses). These are sent as the
 // first word in all command messages, and are echoed back as the first word in
@@ -798,13 +815,20 @@ const (
 	ModeAltFunc2 GPIOMode = 0x04 //  --        IOC       --       --
 	ModeInvalid  GPIOMode = 0xEE // invalid mode is used as error condition
 
-	// GPIO operation mode synonyms:
+	// General GPIO functions
 	ModeADC       = ModeAltFunc0
 	ModeDAC       = ModeAltFunc1
-	ModeSSPND     = ModeDediFunc
-	ModeCLKOUT    = ModeDediFunc
-	ModeUSBCFG    = ModeDediFunc
 	ModeInterrupt = ModeAltFunc2
+
+	// Special functions
+	ModeSSPND  = ModeDediFunc
+	ModeCLKOUT = ModeDediFunc
+	ModeUSBCFG = ModeDediFunc
+
+	// LED status functions
+	ModeLEDI2C = ModeDediFunc
+	ModeLEDURx = ModeAltFunc0
+	ModeLEDUTx = ModeAltFunc1
 
 	// GPIO directions
 	DirOutput  GPIODir = 0x00 // direction OUT is used for writing values to pins
@@ -998,7 +1022,7 @@ func (mod *ADC) SetConfig(pin byte, ref VRef) error {
 		return fmt.Errorf("invalid GPIO pin: %d", pin)
 	}
 
-	if _, ok := pinADC[pin]; !ok {
+	if _, ok := chanADC[pin]; !ok {
 		return fmt.Errorf("pin does not support ADC: %d", pin)
 	}
 
@@ -1039,7 +1063,7 @@ func (mod *ADC) FlashConfig(pin byte, ref VRef) error {
 		return fmt.Errorf("invalid GPIO pin: %d", pin)
 	}
 
-	if _, ok := pinADC[pin]; !ok {
+	if _, ok := chanADC[pin]; !ok {
 		return fmt.Errorf("pin does not support ADC: %d", pin)
 	}
 
@@ -1080,7 +1104,7 @@ func (mod *ADC) GetConfig(pin byte) (VRef, error) {
 		return VRefDefault, fmt.Errorf("invalid GPIO pin: %d", pin)
 	}
 
-	if _, ok := pinADC[pin]; !ok {
+	if _, ok := chanADC[pin]; !ok {
 		return VRefDefault, fmt.Errorf("pin does not support ADC: %d", pin)
 	}
 
@@ -1113,7 +1137,7 @@ func (mod *ADC) Read(pin byte) (uint16, error) {
 		ok  bool
 	)
 
-	if adc, ok = pinADC[pin]; !ok {
+	if adc, ok = chanADC[pin]; !ok {
 		return 0, fmt.Errorf("pin does not support ADC: %d", pin)
 	}
 
@@ -1152,7 +1176,7 @@ func (mod *DAC) SetConfig(pin byte, ref VRef) error {
 		return fmt.Errorf("invalid GPIO pin: %d", pin)
 	}
 
-	if _, ok := pinDAC[pin]; !ok {
+	if _, ok := outpDAC[pin]; !ok {
 		return fmt.Errorf("pin does not support DAC: %d", pin)
 	}
 
@@ -1193,7 +1217,7 @@ func (mod *DAC) FlashConfig(pin byte, ref VRef, val byte) error {
 		return fmt.Errorf("invalid GPIO pin: %d", pin)
 	}
 
-	if _, ok := pinDAC[pin]; !ok {
+	if _, ok := outpDAC[pin]; !ok {
 		return fmt.Errorf("pin does not support DAC: %d", pin)
 	}
 
@@ -1234,7 +1258,7 @@ func (mod *DAC) GetConfig(pin byte) (byte, VRef, error) {
 		return WordClr, VRefDefault, fmt.Errorf("invalid GPIO pin: %d", pin)
 	}
 
-	if _, ok := pinDAC[pin]; !ok {
+	if _, ok := outpDAC[pin]; !ok {
 		return WordClr, VRefDefault, fmt.Errorf("pin does not support DAC: %d", pin)
 	}
 
