@@ -21,8 +21,8 @@ import (
 const (
 	VersionPkg = "mcp2221a"
 	VersionMaj = 0
-	VersionMin = 1
-	VersionPch = 1
+	VersionMin = 2
+	VersionPch = 0
 )
 
 // Version returns the SemVer-compatible version string of this package.
@@ -65,7 +65,7 @@ func makeMsg() []byte { return make([]byte, MsgSz) }
 // element is printed on its own line with the following format in columns of
 // uniform-width:
 //    IDX: DEC {0xHEX} [0bBIN]
-func logMsg(buf []byte) {
+func LogMsg(buf []byte) {
 	if nil == buf || 0 == len(buf) {
 		return
 	}
@@ -154,14 +154,10 @@ type MCP2221A struct {
 	VID    uint16
 	PID    uint16
 
-	// unlocked helps prevent permanently locking the flash memory device on
-	// accident by acting as a gate that must be cleared before any flash write
-	// commands can be performed. Clearing the flag is performed by providing the
-	// correct password to Unlock(). The flag is also automatically cleared when
-	// the device is created and the security settings read from flash memory
-	// indicate no password is required. The flag is set again automatically when
-	// reset (and cleared after startup if no password is set).
-	unlocked bool
+	// Locked indicates if the device is permanently locked, preventing
+	// write-access to the flash memory module.
+	// It is not possible in any way to unlock the device if this is set.
+	locked bool
 
 	// each of the on-chip modules acting as primary functional interfaces.
 	SRAM  *SRAM  // volatile active settings, not restored on startup/reset
@@ -174,7 +170,9 @@ type MCP2221A struct {
 }
 
 // AttachedDevices returns a slice of all connected USB HID device descriptors
-// matching the given VID and PID.
+// matching the given VID and PID. The order of devices in the returned slice
+// will always be the same, so the index of the devices in this slice can be
+// used as index parameter to New() and openUSBDevice().
 //
 // Returns an empty slice if no devices were found. See the hid package
 // documentation for details on inspecting the returned objects.
@@ -189,6 +187,13 @@ func AttachedDevices(vid uint16, pid uint16) []usb.DeviceInfo {
 	return info
 }
 
+// openUSBDevice returns an opened USB HID device descriptor with the given vid
+// and pid and which enumerates itself on the USB host at index idx (an index of
+// 0 will use the first device found).
+//
+// Returns nil and an error if the given index is out of range (including when
+// no devices matching vid/pid were found), or if the USB HID device could not
+// be claimed or opened.
 func openUSBDevice(idx byte, vid uint16, pid uint16) (*usb.Device, error) {
 
 	info := AttachedDevices(vid, pid)
@@ -233,8 +238,12 @@ func New(idx byte, vid uint16, pid uint16) (*MCP2221A, error) {
 
 	// each module embeds the common *MCP2221A instance so that the modules can
 	// refer to each others' functions.
-	mcp.SRAM, mcp.Flash, mcp.GPIO, mcp.ADC, mcp.DAC, mcp.I2C =
-		&SRAM{mcp}, &Flash{mcp}, &GPIO{mcp}, &ADC{mcp}, &DAC{mcp}, &I2C{mcp}
+	mcp.SRAM, mcp.GPIO, mcp.ADC, mcp.DAC, mcp.I2C =
+		&SRAM{mcp}, &GPIO{mcp}, &ADC{mcp}, &DAC{mcp}, &I2C{mcp}
+
+	// configure the write-access flag as disabled by default until we've read the
+	// actual settings from flash memory.
+	mcp.Flash = &Flash{mcp, false}
 
 	// the Alt struct embeds the common *MCP2221A instance, but also has several
 	// other fields that need the same reference.
@@ -250,16 +259,12 @@ func New(idx byte, vid uint16, pid uint16) (*MCP2221A, error) {
 		LEDUTX: &LEDUTX{mcp},
 	}
 
-	// if no password is required for flash-write access, clear the flag.
+	// initialize the device locked flag and flash write-access flag based on the
+	// chip security settings stored in flash memory.
 	if sec, err := mcp.Flash.chipSecurity(); nil != err {
 		return nil, fmt.Errorf("Flash.chipSecurity(): %v", err)
 	} else {
-		switch sec {
-		case SecUnsecured:
-			mcp.unlocked = true
-		default:
-			mcp.unlocked = false
-		}
+		mcp.locked, mcp.Flash.writeable = unlockFlags(sec)
 	}
 
 	return mcp, nil
@@ -290,6 +295,8 @@ func (mcp *MCP2221A) Close() error {
 	if ok, err := mcp.valid(); !ok {
 		return err
 	}
+
+	mcp.locked, mcp.Flash.writeable = true, false
 
 	if err := mcp.Device.Close(); nil != err {
 		return err
@@ -380,16 +387,12 @@ func (mcp *MCP2221A) Reset(timeout time.Duration) error {
 		mcp.Device = dev
 	}
 
-	// if no password is required for flash-write access, clear the flag.
+	// initialize the device locked flag and flash write-access flag based on the
+	// chip security settings stored in flash memory.
 	if sec, err := mcp.Flash.chipSecurity(); nil != err {
 		return fmt.Errorf("Flash.chipSecurity(): %v", err)
 	} else {
-		switch sec {
-		case SecUnsecured:
-			mcp.unlocked = true
-		default:
-			mcp.unlocked = false
-		}
+		mcp.locked, mcp.Flash.writeable = unlockFlags(sec)
 	}
 
 	return nil
@@ -483,37 +486,56 @@ func (mcp *MCP2221A) status() (*status, error) {
 	}
 }
 
-// Unlock sends a flash access command with a given slice of bytes as password
-// if required by the current flash security configuration stored in flash
-// memory, returning true if the password was accepted.
-// If the current chip security configuration is set to no password, this
-// command has no effect and its return value is not guaranteed.
+// unlockFlags returns the default device locked flag and flash writeable flag,
+// in that order, for the given ChipSecurity sec.
+func unlockFlags(sec ChipSecurity) (bool, bool) {
+
+	dev, fla := true, false
+
+	switch sec {
+	case SecUnsecured:
+		dev = false // device not locked
+		fla = true  // flash writeable
+	case SecPassword:
+		dev = false // device not locked
+		fla = false // flash not writeable
+	case SecLocked1, SecLocked2:
+		dev = true  // device locked
+		fla = false // flash not writeable
+	}
+
+	return dev, fla
+}
+
+// Unlock sends a flash access command with a given slice of bytes as password,
+// returning true if the password was accepted and access granted.
+// If more than 8 bytes are provided as password, the first 8 bytes are used and
+// the remaining bytes are truncated.
+// If the current chip security configuration is set to unsecured (no password),
+// then this command has no effect and its return value is not guaranteed.
 //
 // IMPORTANT-SECURITY-1:
 //   Sending too many flash access commands with the incorrect password will
 //   **PERMANENTLY** lock the flash memory device from write access. Read access
 //   is still permitted, but there is absolutely no way to write any changes to
-//   flash memory.
-// IMPORTANT-SECURITY-2:
-//   Attempting to write to flash memory too many times while it is password
-//   protected and the flash access command has not yet been sent successfully
-//   (by calling Unlock(), for example), will again **PERMANENTLY** lock the
-//   flash memory device from write access; this is the same result as sending
-//   too many incorrect passwords described in IMPORTANT-SECURITY-1.
+//   flash memory. Congratulations, you have sorta-ruined your MCP2221A. Trust
+//   me, I can empathize, very unfortunately.
 //
-// Returns flase and a nil password
+// Returns false and an error if the receiver is invalid, the password slice is
+// nil, the password command could not be sent, the provided password was
+// incorrect, or if the flash has been permanently locked.
 func (mcp *MCP2221A) Unlock(pass []byte) (bool, error) {
 
 	if ok, err := mcp.valid(); !ok {
 		return false, err
 	}
 
-	if nil == pass {
-		return false, fmt.Errorf("invalid password bytes (nil)")
+	if mcp.locked {
+		return false, fmt.Errorf("flash access permanently locked")
 	}
 
-	if len(pass) > PasswordLen {
-		return false, fmt.Errorf("password length greater than maximum (%d)", PasswordLen)
+	if nil == pass {
+		return false, fmt.Errorf("invalid password bytes (nil)")
 	}
 
 	// copy the password to a buffer exactly 8 bytes in length, padded with any
@@ -521,20 +543,36 @@ func (mcp *MCP2221A) Unlock(pass []byte) (bool, error) {
 	buf := make([]byte, PasswordLen)
 	copy(buf, pass)
 
-	cmd := makeMsg()
+	var (
+		rsp []byte
+		err error
+	)
 
+	cmd := makeMsg()
 	copy(cmd[2:], buf)
-	if rsp, err := mcp.send(cmdFlashPasswd, cmd); nil != err {
-		if nil != rsp {
-			if 0x03 == rsp[1] {
-				return false, fmt.Errorf("send(): password attempts exceeded")
-			}
-			return false, fmt.Errorf("send(): invalid password")
+	if rsp, err = mcp.send(cmdFlashPasswd, cmd); nil != err {
+		// err is set when our response status code (byte index 1) is non-zero, but
+		// we need to inspect that code to identify rejection reason (below).
+		if nil == rsp {
+			return false, fmt.Errorf("send(): %v", err)
 		}
-		return false, fmt.Errorf("send(): %v", err)
 	}
-	mcp.unlocked = true
-	return true, nil
+
+	switch ChipSecurity(rsp[1]) {
+
+	case SecUnsecured:
+		mcp.Flash.writeable = true
+		return true, nil
+
+	case SecPassword:
+		return false, fmt.Errorf("invalid password")
+
+	case SecLocked1, SecLocked2:
+		return false, fmt.Errorf("flash access permanently locked")
+
+	default:
+		return false, fmt.Errorf("unknown reject reason")
+	}
 }
 
 // -- DEVICE ---------------------------------------------------------- [end] --
@@ -600,6 +638,15 @@ func (mod *SRAM) readRange(start byte, stop byte) ([]byte, error) {
 // the MCP2221A.
 type Flash struct {
 	*MCP2221A
+
+	// writeable helps prevent permanently locking the flash memory device on
+	// accident by acting as a gate that must be cleared before any flash write
+	// commands can be performed. Clearing the flag is performed by providing the
+	// correct password to Unlock(). The flag is also automatically cleared when
+	// the device is created and the security settings read from flash memory
+	// indicate no password is required. The flag is set again automatically when
+	// reset or closed (and cleared again after startup if no password is set).
+	writeable bool
 }
 
 // Constants related to the flash memory module.
@@ -713,7 +760,7 @@ func (mod *Flash) read(sub byte) ([]byte, error) {
 // write() by either configuring the chip security as unsecured (default), or by
 // calling Unlock() with the stored 8-byte flash access password.
 //
-// Returns an error if the receiver is invalid, unlocked flag is false,
+// Returns an error if the receiver is invalid, writeable flag is false,
 // subcommand is invalid, or if the flash write command could not be sent.
 func (mod *Flash) write(sub byte, data []byte) error {
 
@@ -721,8 +768,8 @@ func (mod *Flash) write(sub byte, data []byte) error {
 		return err
 	}
 
-	if !mod.unlocked {
-		return fmt.Errorf("flash write access is locked")
+	if !mod.writeable {
+		return fmt.Errorf("flash access permanently locked")
 	}
 
 	if sub >= subcmdSerialNo {
@@ -757,7 +804,7 @@ func (mod *Flash) write(sub byte, data []byte) error {
 //  [2]          Length              <CHIP-SETTINGS[0]>
 //  [3]          Ignored             <CHIP-SETTINGS[1]>
 //  [4]     <CHIP-SETTINGS[0]>       <CHIP-SETTINGS[2]>
-//  [5]     <CHIP-SETTINGS[1]>       <CHIP-SETTINGS[4]>
+//  [5]     <CHIP-SETTINGS[1]>       <CHIP-SETTINGS[3]>
 //  [N]            ...                      ...
 //
 // If write is false, the message formatted underneath READ-CHIP-SETTINGS is
@@ -928,6 +975,23 @@ func (mod *Flash) FactorySerialNo() (string, error) {
 	}
 }
 
+// ConfigVIDPID writes the given vendor ID and product ID to flash memory.
+// These settings are non-volatile and become the actual VID and PID with which
+// the device will enumerate itself on the USB host (i.e., if changed, the
+// global VID and PID constants defined in this package cannot be used to open
+// the device) on the next reset/startup.
+// Therefore, if changed, be sure your system settings are updated to permit
+// access to the device, since it will appear to be a new USB HID device.
+//
+// For instance, on some udev-based Linux systems, you may need to update your
+// udev rules to grant read-write access to your user for devices matching the
+// new VID/PID (these rules are traditionally kept in /etc/udev/rules.d).
+// If the udev rules are not updated, or your user does not otherwise have the
+// necessary permissions, New()/Reset() will fail on the eventual call to claim
+// the USB HID device (function (*DeviceInfo).Open() in package karalabe/hid).
+//
+// Returns an error if the receiver is invalid or if chip settings could not be
+// read from or written to flash memory.
 func (mod *Flash) ConfigVIDPID(vid uint16, pid uint16) error {
 
 	if ok, err := mod.valid(); !ok {
