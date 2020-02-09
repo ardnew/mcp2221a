@@ -10,6 +10,7 @@ Go **[module](https://blog.golang.org/using-go-modules)** for the MCP2221A USB t
 - [x] **[Fully-documented API](https://godoc.org/github.com/ardnew/mcp2221a)**
 - [x] Compliant Go module (see below: **[Installation](#installation)**)
 - [x] Supports multiple MCP2221A devices simultaneously
+   - Define custom USB device VID/PID
 - [x] GPIO input/output
    - All dedicated and alternate functions (see below: **[GP operating modes](#gp-operating-modes)**)
 - [x] ADC read (10-bit, 3 channels/pins), configurable reference voltage
@@ -18,6 +19,8 @@ Go **[module](https://blog.golang.org/using-go-modules)** for the MCP2221A USB t
 - [x] Rising/falling/both edge interrupt detection
 - [x] Clock output on 1 pin (up to 12 MHz)
 - [x] Save default/power-on configuration to flash memory (GPIO mode/value, DAC output, etc.)
+   - Password-protected flash support
+   - Configure minimum required operating current (510 mA max)
 - [x] I²C read/write (configurable bit rate, up to 400 kHz)
 
 Note that **UART support** is provided natively through the USB interface as a CDC device and is not handled by this module. It should show up in your OS as a regular TTY serial interface (`/dev/tty*` on Linux/macOS, COM on Windows).
