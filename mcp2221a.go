@@ -21,8 +21,8 @@ import (
 const (
 	VersionPkg = "mcp2221a"
 	VersionMaj = 0
-	VersionMin = 1
-	VersionPch = 1
+	VersionMin = 3
+	VersionPch = 0
 )
 
 // Version returns the SemVer-compatible version string of this package.
@@ -65,7 +65,7 @@ func makeMsg() []byte { return make([]byte, MsgSz) }
 // element is printed on its own line with the following format in columns of
 // uniform-width:
 //    IDX: DEC {0xHEX} [0bBIN]
-func logMsg(buf []byte) {
+func LogMsg(buf []byte) {
 	if nil == buf || 0 == len(buf) {
 		return
 	}
@@ -154,27 +154,31 @@ type MCP2221A struct {
 	VID    uint16
 	PID    uint16
 
-	// unlocked helps prevent permanently locking the flash memory device on
-	// accident by acting as a gate that must be cleared before any flash write
-	// commands can be performed. Clearing the flag is performed by providing the
-	// correct password to Unlock(). The flag is also automatically cleared when
-	// the device is created and the security settings read from flash memory
-	// indicate no password is required. The flag is set again automatically when
-	// reset (and cleared after startup if no password is set).
-	unlocked bool
+	// Locked indicates if the device is permanently locked, preventing
+	// write-access to the flash memory module.
+	// It is not possible in any way to unlock the device if this is set. :(
+	locked bool
+
+	// configuration storage interfaces are not exported because incorrect usage
+	// can leave the device in an unusable state, and exposing their methods
+	// confuses or pollutes the API by offering multiple interfaces through which
+	// configuration can be performed. therefore, only the configuration methods
+	// explicitly exported by the individual components may be used. simple.
+	sram  *sram  // volatile active settings, not restored on startup/reset
+	flash *flash // non-volatile inactive settings, restored on startup/reset
 
 	// each of the on-chip modules acting as primary functional interfaces.
-	SRAM  *SRAM  // volatile active settings, not restored on startup/reset
-	Flash *Flash // non-volatile inactive settings, restored on startup/reset
-	GPIO  *GPIO  // 4x GPIO pins, each also have unique special functions
-	ADC   *ADC   // 3x 10-bit analog-to-digital converter
-	DAC   *DAC   // 1x 5-bit digital-to-analog converter (avail on 2 pins)
-	Alt   *Alt   // special-purpose GP alternate/dedicated functions
-	I2C   *I2C   // dedicated I²C SDA/SCL pins, up to 400 kHz
+	GPIO *GPIO // 4x GPIO pins, each also have unique special functions
+	ADC  *ADC  // 3x 10-bit analog-to-digital converter
+	DAC  *DAC  // 1x 5-bit digital-to-analog converter (avail on 2 pins)
+	Alt  *Alt  // special-purpose GP alternate/dedicated functions
+	I2C  *I2C  // dedicated I²C SDA/SCL pins, up to 400 kHz
 }
 
 // AttachedDevices returns a slice of all connected USB HID device descriptors
-// matching the given VID and PID.
+// matching the given VID and PID. The order of devices in the returned slice
+// will always be the same, so the index of the devices in this slice can be
+// used as index parameter to New() and openUSBDevice().
 //
 // Returns an empty slice if no devices were found. See the hid package
 // documentation for details on inspecting the returned objects.
@@ -189,6 +193,13 @@ func AttachedDevices(vid uint16, pid uint16) []usb.DeviceInfo {
 	return info
 }
 
+// openUSBDevice returns an opened USB HID device descriptor with the given vid
+// and pid and which enumerates itself on the USB host at index idx (an index of
+// 0 will use the first device found).
+//
+// Returns nil and an error if the given index is out of range (including when
+// no devices matching vid/pid were found), or if the USB HID device could not
+// be claimed or opened.
 func openUSBDevice(idx byte, vid uint16, pid uint16) (*usb.Device, error) {
 
 	info := AttachedDevices(vid, pid)
@@ -233,8 +244,12 @@ func New(idx byte, vid uint16, pid uint16) (*MCP2221A, error) {
 
 	// each module embeds the common *MCP2221A instance so that the modules can
 	// refer to each others' functions.
-	mcp.SRAM, mcp.Flash, mcp.GPIO, mcp.ADC, mcp.DAC, mcp.I2C =
-		&SRAM{mcp}, &Flash{mcp}, &GPIO{mcp}, &ADC{mcp}, &DAC{mcp}, &I2C{mcp}
+	mcp.sram, mcp.GPIO, mcp.ADC, mcp.DAC, mcp.I2C =
+		&sram{mcp}, &GPIO{mcp}, &ADC{mcp}, &DAC{mcp}, &I2C{mcp}
+
+	// configure the write-access flag as disabled by default until we've read the
+	// actual settings from flash memory.
+	mcp.flash = &flash{mcp, false}
 
 	// the Alt struct embeds the common *MCP2221A instance, but also has several
 	// other fields that need the same reference.
@@ -250,16 +265,12 @@ func New(idx byte, vid uint16, pid uint16) (*MCP2221A, error) {
 		LEDUTX: &LEDUTX{mcp},
 	}
 
-	// if no password is required for flash-write access, clear the flag.
-	if sec, err := mcp.Flash.chipSecurity(); nil != err {
-		return nil, fmt.Errorf("Flash.chipSecurity(): %v", err)
+	// initialize the device locked flag and flash write-access flag based on the
+	// chip security settings stored in flash memory.
+	if sec, err := mcp.flash.chipSecurity(); nil != err {
+		return nil, fmt.Errorf("flash.chipSecurity(): %v", err)
 	} else {
-		switch sec {
-		case SecUnsecured:
-			mcp.unlocked = true
-		default:
-			mcp.unlocked = false
-		}
+		mcp.locked, mcp.flash.writeable = unlockFlags(sec)
 	}
 
 	return mcp, nil
@@ -290,6 +301,8 @@ func (mcp *MCP2221A) Close() error {
 	if ok, err := mcp.valid(); !ok {
 		return err
 	}
+
+	mcp.locked, mcp.flash.writeable = true, false
 
 	if err := mcp.Device.Close(); nil != err {
 		return err
@@ -380,16 +393,12 @@ func (mcp *MCP2221A) Reset(timeout time.Duration) error {
 		mcp.Device = dev
 	}
 
-	// if no password is required for flash-write access, clear the flag.
-	if sec, err := mcp.Flash.chipSecurity(); nil != err {
-		return fmt.Errorf("Flash.chipSecurity(): %v", err)
+	// initialize the device locked flag and flash write-access flag based on the
+	// chip security settings stored in flash memory.
+	if sec, err := mcp.flash.chipSecurity(); nil != err {
+		return fmt.Errorf("flash.chipSecurity(): %v", err)
 	} else {
-		switch sec {
-		case SecUnsecured:
-			mcp.unlocked = true
-		default:
-			mcp.unlocked = false
-		}
+		mcp.locked, mcp.flash.writeable = unlockFlags(sec)
 	}
 
 	return nil
@@ -483,37 +492,208 @@ func (mcp *MCP2221A) status() (*status, error) {
 	}
 }
 
-// Unlock sends a flash access command with a given slice of bytes as password
-// if required by the current flash security configuration stored in flash
-// memory, returning true if the password was accepted.
-// If the current chip security configuration is set to no password, this
-// command has no effect and its return value is not guaranteed.
+// USBManufacturer reads the current USB manufacturer description from flash
+// memory and returns it as a string.
+//
+// Returns an empty string and error if the receiver is invalid or if the flash
+// configuration could not be read.
+func (mcp *MCP2221A) USBManufacturer() (string, error) {
+
+	if ok, err := mcp.valid(); !ok {
+		return "", err
+	}
+
+	if rsp, err := mcp.flash.read(subcmdUSBMfgDesc); nil != err {
+		return "", fmt.Errorf("read(): %v", err)
+	} else {
+		return parseFlashString(rsp), nil
+	}
+}
+
+// USBProduct reads the current USB product description from flash memory and
+// returns it as a string.
+//
+// Returns an empty string and error if the receiver is invalid or if the flash
+// configuration could not be read.
+func (mcp *MCP2221A) USBProduct() (string, error) {
+
+	if ok, err := mcp.valid(); !ok {
+		return "", err
+	}
+
+	if rsp, err := mcp.flash.read(subcmdUSBProdDesc); nil != err {
+		return "", fmt.Errorf("read(): %v", err)
+	} else {
+		return parseFlashString(rsp), nil
+	}
+}
+
+// USBSerialNo reads the current USB serial number from flash memory and returns
+// it as a string.
+//
+// Returns an empty string and error if the receiver is invalid or if the flash
+// configuration could not be read.
+func (mcp *MCP2221A) USBSerialNo() (string, error) {
+
+	if ok, err := mcp.valid(); !ok {
+		return "", err
+	}
+
+	if rsp, err := mcp.flash.read(subcmdUSBSerialNo); nil != err {
+		return "", fmt.Errorf("read(): %v", err)
+	} else {
+		return parseFlashString(rsp), nil
+	}
+}
+
+// FactorySerialNo reads the factory serial number (read-only) from flash memory
+// and returns it as a string.
+//
+// Returns an empty string and error if the receiver is invalid or if the flash
+// configuration could not be read.
+func (mcp *MCP2221A) FactorySerialNo() (string, error) {
+
+	if ok, err := mcp.valid(); !ok {
+		return "", err
+	}
+
+	if rsp, err := mcp.flash.read(subcmdSerialNo); nil != err {
+		return "", fmt.Errorf("read(): %v", err)
+	} else {
+		cnt := rsp[2] - 2
+		if cnt > MsgSz-4 {
+			cnt = MsgSz - 4
+		}
+		return string(rsp[4 : 4+cnt]), nil
+	}
+}
+
+// ConfigVIDPID changes the device's VID and PID written in flash memory.
+// These settings are non-volatile and become the actual VID and PID with which
+// the device will enumerate itself on the USB host (i.e., if changed, the
+// global VID and PID constants defined in this package cannot be used to open
+// the device) on the next reset/startup.
+// Therefore, if changed, be sure your system settings are updated to permit
+// access to the device, since it will appear to be a new USB HID device.
+//
+// For instance, on some udev-based Linux systems, you may need to update your
+// udev rules to grant read-write access to your user for devices matching the
+// new VID/PID (these rules are traditionally kept in /etc/udev/rules.d).
+// If the udev rules are not updated, or your user does not otherwise have the
+// necessary permissions, New()/Reset() will fail on the eventual call to claim
+// the USB HID device (function (*DeviceInfo).Open() in package karalabe/hid).
+//
+// Returns an error if the receiver is invalid or if chip settings could not be
+// read from or written to flash memory.
+func (mcp *MCP2221A) ConfigVIDPID(vid uint16, pid uint16) error {
+
+	if ok, err := mcp.valid(); !ok {
+		return err
+	}
+
+	if cmd, err := mcp.flash.chipSettings(true); nil != err {
+		return fmt.Errorf("chipSettings(): %v", err)
+	} else {
+
+		cmd[6] = byte(vid & 0xFF)
+		cmd[7] = byte((vid >> 8) & 0xFF)
+		cmd[8] = byte(pid & 0xFF)
+		cmd[9] = byte((pid >> 8) & 0xFF)
+
+		if err := mcp.flash.write(subcmdChipSettings, cmd); nil != err {
+			return fmt.Errorf("write(): %v", err)
+		}
+	}
+
+	return nil
+}
+
+// ConfigReqCurrent writes to flash memory the minimum required current (in mA)
+// requested from the USB host during enumeration for bus-powered operation.
+// The provided current should be a multiple of 2 mA and at maximum 510 mA.
+// If the provided current is not a multiple of 2 mA, the requested current is
+// incremented by 1 mA.
+// If the provided current is greater than 510 mA, the requested current is set
+// to 510 mA.
+//
+// Returns an error if the receiver is invalid or if the settings could not be
+// read from or written to flash memory.
+func (mcp *MCP2221A) ConfigReqCurrent(ma uint16) error {
+
+	if ok, err := mcp.valid(); !ok {
+		return err
+	}
+
+	max := uint16(0xFF * 2)
+	req := uint16(ma + (ma & 1))
+	if req > max {
+		req = max
+	}
+
+	if cmd, err := mcp.flash.chipSettings(true); nil != err {
+		return fmt.Errorf("chipSettings(): %v", err)
+	} else {
+
+		cmd[11] = byte(req / 2)
+
+		if err := mcp.flash.write(subcmdChipSettings, cmd); nil != err {
+			return fmt.Errorf("write(): %v", err)
+		}
+	}
+
+	return nil
+}
+
+// unlockFlags returns the default device locked flag and flash writeable flag,
+// in that order, for the given ChipSecurity sec.
+func unlockFlags(sec ChipSecurity) (bool, bool) {
+
+	dev, fla := true, false
+
+	switch sec {
+	case SecUnsecured:
+		dev = false // device not locked
+		fla = true  // flash writeable
+	case SecPassword:
+		dev = false // device not locked
+		fla = false // flash not writeable
+	case SecLocked1, SecLocked2:
+		dev = true  // device locked
+		fla = false // flash not writeable
+	}
+
+	return dev, fla
+}
+
+// ConfigUnlock sends a flash access command with a given slice of bytes as
+// password, returning true if the password was accepted and access granted.
+// If more than 8 bytes are provided as password, the first 8 bytes are used and
+// the remaining bytes are truncated.
+// If the current chip security configuration is set to unsecured (no password),
+// then this command has no effect and its return value is not guaranteed.
 //
 // IMPORTANT-SECURITY-1:
 //   Sending too many flash access commands with the incorrect password will
 //   **PERMANENTLY** lock the flash memory device from write access. Read access
 //   is still permitted, but there is absolutely no way to write any changes to
-//   flash memory.
-// IMPORTANT-SECURITY-2:
-//   Attempting to write to flash memory too many times while it is password
-//   protected and the flash access command has not yet been sent successfully
-//   (by calling Unlock(), for example), will again **PERMANENTLY** lock the
-//   flash memory device from write access; this is the same result as sending
-//   too many incorrect passwords described in IMPORTANT-SECURITY-1.
+//   flash memory. Congratulations, you have sorta-ruined your MCP2221A. Trust
+//   me, I can empathize, very unfortunately.
 //
-// Returns flase and a nil password
-func (mcp *MCP2221A) Unlock(pass []byte) (bool, error) {
+// Returns false and an error if the receiver is invalid, the password slice is
+// nil, the password command could not be sent, the provided password was
+// incorrect, or if the flash has been permanently locked.
+func (mcp *MCP2221A) ConfigUnlock(pass []byte) (bool, error) {
 
 	if ok, err := mcp.valid(); !ok {
 		return false, err
 	}
 
-	if nil == pass {
-		return false, fmt.Errorf("invalid password bytes (nil)")
+	if mcp.locked {
+		return false, fmt.Errorf("flash access permanently locked")
 	}
 
-	if len(pass) > PasswordLen {
-		return false, fmt.Errorf("password length greater than maximum (%d)", PasswordLen)
+	if nil == pass {
+		return false, fmt.Errorf("invalid password bytes (nil)")
 	}
 
 	// copy the password to a buffer exactly 8 bytes in length, padded with any
@@ -521,20 +701,36 @@ func (mcp *MCP2221A) Unlock(pass []byte) (bool, error) {
 	buf := make([]byte, PasswordLen)
 	copy(buf, pass)
 
-	cmd := makeMsg()
+	var (
+		rsp []byte
+		err error
+	)
 
+	cmd := makeMsg()
 	copy(cmd[2:], buf)
-	if rsp, err := mcp.send(cmdFlashPasswd, cmd); nil != err {
-		if nil != rsp {
-			if 0x03 == rsp[1] {
-				return false, fmt.Errorf("send(): password attempts exceeded")
-			}
-			return false, fmt.Errorf("send(): invalid password")
+	if rsp, err = mcp.send(cmdFlashPasswd, cmd); nil != err {
+		// err is set when our response status code (byte index 1) is non-zero, but
+		// we need to inspect that code to identify rejection reason (below).
+		if nil == rsp {
+			return false, fmt.Errorf("send(): %v", err)
 		}
-		return false, fmt.Errorf("send(): %v", err)
 	}
-	mcp.unlocked = true
-	return true, nil
+
+	switch ChipSecurity(rsp[1]) {
+
+	case SecUnsecured:
+		mcp.flash.writeable = true
+		return true, nil
+
+	case SecPassword:
+		return false, fmt.Errorf("invalid password")
+
+	case SecLocked1, SecLocked2:
+		return false, fmt.Errorf("flash access permanently locked")
+
+	default:
+		return false, fmt.Errorf("unknown reject reason")
+	}
 }
 
 // -- DEVICE ---------------------------------------------------------- [end] --
@@ -543,9 +739,9 @@ func (mcp *MCP2221A) Unlock(pass []byte) (bool, error) {
 // -----------------------------------------------------------------------------
 // -- SRAM ---------------------------------------------------------- [start] --
 
-// SRAM contains the methods associated with the SRAM component of the
+// sram contains the methods associated with the SRAM component of the
 // MCP2221A.
-type SRAM struct {
+type sram struct {
 	*MCP2221A
 }
 
@@ -554,7 +750,7 @@ type SRAM struct {
 //
 // Returns a nil slice and error if the receiver is invalid, the given range is
 // invalid, or if the configuration command could not be sent.
-func (mod *SRAM) read() ([]byte, error) {
+func (mod *sram) read() ([]byte, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return nil, err
@@ -573,7 +769,7 @@ func (mod *SRAM) read() ([]byte, error) {
 //
 // Returns a nil slice and error if the receiver is invalid, the given range is
 // invalid, or if the configuration command could not be sent.
-func (mod *SRAM) readRange(start byte, stop byte) ([]byte, error) {
+func (mod *sram) readRange(start byte, stop byte) ([]byte, error) {
 
 	if ok, err := mod.valid(); !ok {
 		return nil, err
@@ -596,10 +792,19 @@ func (mod *SRAM) readRange(start byte, stop byte) ([]byte, error) {
 // -----------------------------------------------------------------------------
 // -- FLASH --------------------------------------------------------- [start] --
 
-// Flash contains the methods associated with the flash memory component of
+// flash contains the methods associated with the flash memory component of
 // the MCP2221A.
-type Flash struct {
+type flash struct {
 	*MCP2221A
+
+	// writeable helps prevent permanently locking the flash memory device on
+	// accident by acting as a gate that must be cleared before any flash write
+	// commands can be performed. Clearing the flag is performed by providing the
+	// correct password to ConfigUnlock(). The flag is also automatically cleared
+	// when the device is created and the security settings read from flash memory
+	// indicate no password is required. The flag is set again automatically when
+	// reset or closed (and cleared again after startup if no password is set).
+	writeable bool
 }
 
 // Constants related to the flash memory module.
@@ -682,152 +887,6 @@ func parseChipSettings(msg []byte) *chipSettings {
 	}
 }
 
-// read reads the settings associated with the given subcommand sub from flash
-// memory and returns the response message.
-//
-// Returns nil and an error if the receiver is invalid, subcommand is invalid,
-// or if the flash read command could not be sent.
-func (mod *Flash) read(sub byte) ([]byte, error) {
-
-	if ok, err := mod.valid(); !ok {
-		return nil, err
-	}
-
-	if sub > subcmdSerialNo {
-		return nil, fmt.Errorf("invalid subcommand: %d", sub)
-	}
-
-	cmd := makeMsg()
-	cmd[1] = sub
-
-	if rsp, err := mod.send(cmdFlashRead, cmd); nil != err {
-		return nil, fmt.Errorf("send(): %v", err)
-	} else {
-		return rsp, nil
-	}
-}
-
-// write writes the given settings data associated with subcommand sub to flash
-// memory.
-// The flash memory device must be unlocked for write-access prior to calling
-// write() by either configuring the chip security as unsecured (default), or by
-// calling Unlock() with the stored 8-byte flash access password.
-//
-// Returns an error if the receiver is invalid, unlocked flag is false,
-// subcommand is invalid, or if the flash write command could not be sent.
-func (mod *Flash) write(sub byte, data []byte) error {
-
-	if ok, err := mod.valid(); !ok {
-		return err
-	}
-
-	if !mod.unlocked {
-		return fmt.Errorf("flash write access is locked")
-	}
-
-	if sub >= subcmdSerialNo {
-		return fmt.Errorf("invalid subcommand: %d", sub)
-	}
-
-	data[1] = sub
-
-	if _, err := mod.send(cmdFlashWrite, data); nil != err {
-		return fmt.Errorf("send(): %v", err)
-	}
-
-	return nil
-}
-
-// chipSettings reads the current chip settings stored in flash memory and
-// returns the byte slice from its response message, aligned as either a
-// read-response or a write-command of the flash chip-settings subcommand.
-// If write is true, the returned slice can then be used for manipulation before
-// passing it on directly as the message data to Flash.write().
-// These settings do not necessarily reflect the current device configuration,
-// which are stored in SRAM.
-//
-// The important/relevant content of the chip-settings flash-write command and
-// flash-read response are exactly the same, except that the flash-write content
-// starts at byte index 2:
-//
-//          READ-CHIP-SETTINGS       WRITE-CHIP-SETTINGS
-//         --------------------     ---------------------
-//  [0]          Command                  Command
-//  [1]          Success                 Subcommand
-//  [2]          Length              <CHIP-SETTINGS[0]>
-//  [3]          Ignored             <CHIP-SETTINGS[1]>
-//  [4]     <CHIP-SETTINGS[0]>       <CHIP-SETTINGS[2]>
-//  [5]     <CHIP-SETTINGS[1]>       <CHIP-SETTINGS[4]>
-//  [N]            ...                      ...
-//
-// If write is false, the message formatted underneath READ-CHIP-SETTINGS is
-// returned.
-// If write is true, the message formatted underneath WRITE-CHIP-SETTINGS is
-// returned.
-//
-// Returns nil with an error if the receiver is invalid or could not read from
-// flash memory.
-func (mod *Flash) chipSettings(write bool) ([]byte, error) {
-
-	if ok, err := mod.valid(); !ok {
-		return nil, err
-	}
-
-	if rsp, err := mod.read(subcmdChipSettings); nil != err {
-		return nil, fmt.Errorf("read(): %v", err)
-	} else {
-		if write {
-			cmd := makeMsg()
-			copy(cmd[2:], rsp[4:])
-			return cmd, nil
-		} else {
-			return rsp, nil
-		}
-	}
-}
-
-// chipSecurity reads and returns the current security access configuration from
-// flash memory.
-//
-// Returns SecLocked2 and an error if the receiver is invalid or the chip
-// settings could not be read from flash memory.
-func (mod *Flash) chipSecurity() (ChipSecurity, error) {
-
-	if ok, err := mod.valid(); !ok {
-		return SecLocked2, err
-	}
-
-	// read the current chip settings stored in flash memory
-	if chp, err := mod.chipSettings(false); nil != err {
-		return SecLocked2, fmt.Errorf("chipSettings(): %v", err)
-	} else {
-		cs := parseChipSettings(chp)
-		return cs.chipSecurity, nil
-	}
-}
-
-// gpioSettings reads the current GP settings from flash memory and returns only
-// the range of bytes containing all of the GPIO pin configurations.
-// The returned slice will always be the same length (4), and each pin's
-// configuration is stored at its respective index (i.e. pin 2 will be at [2]).
-// These settings do not necessarily reflect the current device configuration,
-// which are stored in SRAM.
-//
-// Returns nil with an error if the receiver is invalid or could not read from
-// flash memory.
-func (mod *Flash) gpioSettings() ([]byte, error) {
-
-	if ok, err := mod.valid(); !ok {
-		return nil, err
-	}
-
-	if rsp, err := mod.read(subcmdGPSettings); nil != err {
-		return nil, fmt.Errorf("read(): %v", err)
-	} else {
-		return rsp[4:8], nil
-	}
-}
-
 // parseFlashString parses a UTF-16-encoded string stored in the response
 // messages of flash read commands (0xB0).
 func parseFlashString(b []byte) string {
@@ -852,103 +911,150 @@ func parseFlashString(b []byte) string {
 	return string(utf16.Decode(p))
 }
 
-// USBManufacturer reads the current USB manufacturer description from flash
-// memory and returns it as a string.
+// read reads the settings associated with the given subcommand sub from flash
+// memory and returns the response message.
 //
-// Returns an empty string and error if the receiver is invalid or if the flash
-// configuration could not be read.
-func (mod *Flash) USBManufacturer() (string, error) {
+// Returns nil and an error if the receiver is invalid, subcommand is invalid,
+// or if the flash read command could not be sent.
+func (mod *flash) read(sub byte) ([]byte, error) {
 
 	if ok, err := mod.valid(); !ok {
-		return "", err
+		return nil, err
 	}
 
-	if rsp, err := mod.read(subcmdUSBMfgDesc); nil != err {
-		return "", fmt.Errorf("read(): %v", err)
+	if sub > subcmdSerialNo {
+		return nil, fmt.Errorf("invalid subcommand: %d", sub)
+	}
+
+	cmd := makeMsg()
+	cmd[1] = sub
+
+	if rsp, err := mod.send(cmdFlashRead, cmd); nil != err {
+		return nil, fmt.Errorf("send(): %v", err)
 	} else {
-		return parseFlashString(rsp), nil
+		return rsp, nil
 	}
 }
 
-// USBProduct reads the current USB product description from flash memory and
-// returns it as a string.
+// write writes the given settings data associated with subcommand sub to flash
+// memory.
+// The flash memory device must be unlocked for write-access prior to calling
+// write() by either configuring the chip security as unsecured (default), or by
+// calling ConfigUnlock() with the stored 8-byte flash access password.
 //
-// Returns an empty string and error if the receiver is invalid or if the flash
-// configuration could not be read.
-func (mod *Flash) USBProduct() (string, error) {
-
-	if ok, err := mod.valid(); !ok {
-		return "", err
-	}
-
-	if rsp, err := mod.read(subcmdUSBProdDesc); nil != err {
-		return "", fmt.Errorf("read(): %v", err)
-	} else {
-		return parseFlashString(rsp), nil
-	}
-}
-
-// USBSerialNo reads the current USB serial number from flash memory and returns
-// it as a string.
-//
-// Returns an empty string and error if the receiver is invalid or if the flash
-// configuration could not be read.
-func (mod *Flash) USBSerialNo() (string, error) {
-
-	if ok, err := mod.valid(); !ok {
-		return "", err
-	}
-
-	if rsp, err := mod.read(subcmdUSBSerialNo); nil != err {
-		return "", fmt.Errorf("read(): %v", err)
-	} else {
-		return parseFlashString(rsp), nil
-	}
-}
-
-// FactorySerialNo reads the factory serial number (read-only) from flash memory
-// and returns it as a string.
-//
-// Returns an empty string and error if the receiver is invalid or if the flash
-// configuration could not be read.
-func (mod *Flash) FactorySerialNo() (string, error) {
-
-	if ok, err := mod.valid(); !ok {
-		return "", err
-	}
-
-	if rsp, err := mod.read(subcmdSerialNo); nil != err {
-		return "", fmt.Errorf("read(): %v", err)
-	} else {
-		cnt := rsp[2] - 2
-		if cnt > MsgSz-4 {
-			cnt = MsgSz - 4
-		}
-		return string(rsp[4 : 4+cnt]), nil
-	}
-}
-
-func (mod *Flash) ConfigVIDPID(vid uint16, pid uint16) error {
+// Returns an error if the receiver is invalid, writeable flag is false,
+// subcommand is invalid, or if the flash write command could not be sent.
+func (mod *flash) write(sub byte, data []byte) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
 	}
 
-	if cmd, err := mod.chipSettings(true); nil != err {
-		return fmt.Errorf("chipSettings(): %v", err)
-	} else {
+	if !mod.writeable {
+		return fmt.Errorf("flash access permanently locked")
+	}
 
-		cmd[6] = byte(vid & 0xFF)
-		cmd[7] = byte((vid >> 8) & 0xFF)
-		cmd[8] = byte(pid & 0xFF)
-		cmd[9] = byte((pid >> 8) & 0xFF)
+	if sub >= subcmdSerialNo {
+		return fmt.Errorf("invalid subcommand: %d", sub)
+	}
 
-		if err := mod.write(subcmdChipSettings, cmd); nil != err {
-			return fmt.Errorf("write(): %v", err)
-		}
+	data[1] = sub
+
+	if _, err := mod.send(cmdFlashWrite, data); nil != err {
+		return fmt.Errorf("send(): %v", err)
 	}
 
 	return nil
+}
+
+// chipSettings reads the current chip settings stored in flash memory and
+// returns the byte slice from its response message, aligned as either a
+// read-response or a write-command of the flash chip-settings subcommand.
+// If write is true, the returned slice can then be used for manipulation before
+// passing it on directly as the message data to flash.write().
+// These settings do not necessarily reflect the current device configuration,
+// which are stored in SRAM.
+//
+// The important/relevant content of the chip-settings flash-write command and
+// flash-read response are exactly the same, except that the flash-write content
+// starts at byte index 2:
+//
+//          READ-CHIP-SETTINGS       WRITE-CHIP-SETTINGS
+//         --------------------     ---------------------
+//  [0]          Command                  Command
+//  [1]          Success                 Subcommand
+//  [2]          Length              <CHIP-SETTINGS[0]>
+//  [3]          Ignored             <CHIP-SETTINGS[1]>
+//  [4]     <CHIP-SETTINGS[0]>       <CHIP-SETTINGS[2]>
+//  [5]     <CHIP-SETTINGS[1]>       <CHIP-SETTINGS[3]>
+//  [N]            ...                      ...
+//
+// If write is false, the message formatted underneath READ-CHIP-SETTINGS is
+// returned.
+// If write is true, the message formatted underneath WRITE-CHIP-SETTINGS is
+// returned.
+//
+// Returns nil with an error if the receiver is invalid or could not read from
+// flash memory.
+func (mod *flash) chipSettings(write bool) ([]byte, error) {
+
+	if ok, err := mod.valid(); !ok {
+		return nil, err
+	}
+
+	if rsp, err := mod.read(subcmdChipSettings); nil != err {
+		return nil, fmt.Errorf("read(): %v", err)
+	} else {
+		if write {
+			cmd := makeMsg()
+			copy(cmd[2:], rsp[4:])
+			return cmd, nil
+		} else {
+			return rsp, nil
+		}
+	}
+}
+
+// chipSecurity reads and returns the current security access configuration from
+// flash memory.
+//
+// Returns SecLocked2 and an error if the receiver is invalid or the chip
+// settings could not be read from flash memory.
+func (mod *flash) chipSecurity() (ChipSecurity, error) {
+
+	if ok, err := mod.valid(); !ok {
+		return SecLocked2, err
+	}
+
+	// read the current chip settings stored in flash memory
+	if chp, err := mod.chipSettings(false); nil != err {
+		return SecLocked2, fmt.Errorf("chipSettings(): %v", err)
+	} else {
+		cs := parseChipSettings(chp)
+		return cs.chipSecurity, nil
+	}
+}
+
+// gpioSettings reads the current GP settings from flash memory and returns only
+// the range of bytes containing all of the GPIO pin configurations.
+// The returned slice will always be the same length (4), and each pin's
+// configuration is stored at its respective index (i.e. pin 2 will be at [2]).
+// These settings do not necessarily reflect the current device configuration,
+// which are stored in SRAM.
+//
+// Returns nil with an error if the receiver is invalid or could not read from
+// flash memory.
+func (mod *flash) gpioSettings() ([]byte, error) {
+
+	if ok, err := mod.valid(); !ok {
+		return nil, err
+	}
+
+	if rsp, err := mod.read(subcmdGPSettings); nil != err {
+		return nil, fmt.Errorf("read(): %v", err)
+	} else {
+		return rsp[4:8], nil
+	}
 }
 
 // -- FLASH ----------------------------------------------------------- [end] --
@@ -1023,8 +1129,8 @@ func (mod *GPIO) SetConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) error
 
 	cmd := makeMsg()
 
-	if cur, err := mod.SRAM.readRange(22, 25); nil != err {
-		return fmt.Errorf("SRAM.readRange(): %v", err)
+	if cur, err := mod.sram.readRange(22, 25); nil != err {
+		return fmt.Errorf("sram.readRange(): %v", err)
 	} else {
 		// copy the current GPIO settings because they will -all- be set with the
 		// command request
@@ -1065,16 +1171,16 @@ func (mod *GPIO) FlashConfig(pin byte, val byte, mode GPIOMode, dir GPIODir) err
 
 	cmd := makeMsg()
 
-	if cur, err := mod.Flash.gpioSettings(); nil != err {
-		return fmt.Errorf("Flash.gpioSettings(): %v", err)
+	if cur, err := mod.flash.gpioSettings(); nil != err {
+		return fmt.Errorf("flash.gpioSettings(): %v", err)
 	} else {
 		copy(cmd[2:], cur)
 	}
 
 	cmd[2+pin] = (val << 4) | (byte(dir) << 3) | byte(mode)
 
-	if err := mod.Flash.write(subcmdGPSettings, cmd); nil != err {
-		return fmt.Errorf("Flash.write(): %v", err)
+	if err := mod.flash.write(subcmdGPSettings, cmd); nil != err {
+		return fmt.Errorf("flash.write(): %v", err)
 	}
 
 	return nil
@@ -1095,8 +1201,8 @@ func (mod *GPIO) GetConfig(pin byte) (byte, GPIOMode, GPIODir, error) {
 		return WordClr, ModeInvalid, DirInvalid, fmt.Errorf("invalid GPIO pin: %d", pin)
 	}
 
-	if rsp, err := mod.SRAM.readRange(22, 25); nil != err {
-		return WordClr, ModeInvalid, DirInvalid, fmt.Errorf("SRAM.readRange(): %v", err)
+	if rsp, err := mod.sram.readRange(22, 25); nil != err {
+		return WordClr, ModeInvalid, DirInvalid, fmt.Errorf("sram.readRange(): %v", err)
 	} else {
 		mode := GPIOMode(rsp[pin] & 0x07)
 		dir := GPIODir((rsp[pin] >> 3) & 0x01)
@@ -1242,14 +1348,14 @@ func (mod *ADC) FlashConfig(pin byte, ref VRef) error {
 		return fmt.Errorf("GPIO.FlashConfig(): %v", err)
 	}
 
-	if cmd, err := mod.Flash.chipSettings(true); nil != err {
-		return fmt.Errorf("Flash.chipSettings(): %v", err)
+	if cmd, err := mod.flash.chipSettings(true); nil != err {
+		return fmt.Errorf("flash.chipSettings(): %v", err)
 	} else {
 		cmd[5] &= ^byte(0x07 << 2) // mask off the VRef bits (2-4)
 		cmd[5] |= (byte(ref) << 2)
 
-		if err := mod.Flash.write(subcmdChipSettings, cmd); nil != err {
-			return fmt.Errorf("Flash.write(): %v", err)
+		if err := mod.flash.write(subcmdChipSettings, cmd); nil != err {
+			return fmt.Errorf("flash.write(): %v", err)
 		}
 	}
 
@@ -1275,8 +1381,8 @@ func (mod *ADC) GetConfig(pin byte) (VRef, error) {
 		return VRefDefault, fmt.Errorf("pin does not support ADC: %d", pin)
 	}
 
-	if buf, err := mod.SRAM.readRange(7, 7); nil != err {
-		return VRefDefault, fmt.Errorf("SRAM.readRange(): %v", err)
+	if buf, err := mod.sram.readRange(7, 7); nil != err {
+		return VRefDefault, fmt.Errorf("sram.readRange(): %v", err)
 	} else {
 		ref := VRef((buf[0] >> 2) & 0x07)
 		return ref, nil
@@ -1396,13 +1502,13 @@ func (mod *DAC) FlashConfig(pin byte, ref VRef, val byte) error {
 		return fmt.Errorf("GPIO.FlashConfig(): %v", err)
 	}
 
-	if cmd, err := mod.Flash.chipSettings(true); nil != err {
-		return fmt.Errorf("Flash.chipSettings(): %v", err)
+	if cmd, err := mod.flash.chipSettings(true); nil != err {
+		return fmt.Errorf("flash.chipSettings(): %v", err)
 	} else {
 		cmd[4] = (byte(ref) << 5) | (val & 0x1F)
 
-		if err := mod.Flash.write(subcmdChipSettings, cmd); nil != err {
-			return fmt.Errorf("Flash.write(): %v", err)
+		if err := mod.flash.write(subcmdChipSettings, cmd); nil != err {
+			return fmt.Errorf("flash.write(): %v", err)
 		}
 	}
 
@@ -1429,24 +1535,24 @@ func (mod *DAC) GetConfig(pin byte) (byte, VRef, error) {
 		return WordClr, VRefDefault, fmt.Errorf("pin does not support DAC: %d", pin)
 	}
 
-	if buf, err := mod.SRAM.readRange(6, 6); nil != err {
-		return WordClr, VRefDefault, fmt.Errorf("SRAM.readRange(): %v", err)
+	if buf, err := mod.sram.readRange(6, 6); nil != err {
+		return WordClr, VRefDefault, fmt.Errorf("sram.readRange(): %v", err)
 	} else {
-		val := (buf[0] & 0x1F) // power-up DAC value (bits 0-4)
+		val := buf[0] & 0x1F // power-up DAC value (bits 0-4)
 		ref := VRef((buf[0] >> 5) & 0x07)
 		return val, ref, nil
 	}
 }
 
-// Write performs a digital-to-analog conversion and outputs the given value on
-// all DAC-enabled pins.
+// Write performs a digital-to-analog conversion and outputs the given value
+// (modulo 32) on all DAC-enabled pins.
 // The device only has a single DAC with two pins connected to it, so the value
 // output will be present on both pins if they are both configured for DAC
 // operation.
 //
 // Returns an error if the receiver is invalid or if the converted value could
 // not be sent.
-func (mod *DAC) Write(val uint16) error {
+func (mod *DAC) Write(val byte) error {
 
 	if ok, err := mod.valid(); !ok {
 		return err
@@ -1454,8 +1560,11 @@ func (mod *DAC) Write(val uint16) error {
 
 	cmd := makeMsg()
 
+	// simulate 5-bit integer overflow
+	out := val % 0x20
+
 	// set DAC alter bit (7) and set requested 5-bit value
-	cmd[4] = (1 << 7) | byte(val&0x1F)
+	cmd[4] = (1 << 7) | byte(out)
 
 	if _, err := mod.send(cmdSRAMSet, cmd); nil != err {
 		return fmt.Errorf("send(): %v", err)
@@ -1469,44 +1578,6 @@ func (mod *DAC) Write(val uint16) error {
 
 // -----------------------------------------------------------------------------
 // -- Alt ----------------------------------------------------------- [start] --
-
-// SUSPND contains the methods associated with the SSPND GP dedicated function.
-type SUSPND struct {
-	*MCP2221A
-}
-
-// CLKOUT contains the methods associated with the CLKR GP dedicated function.
-type CLKOUT struct {
-	*MCP2221A
-}
-
-// USBCFG contains the methods associated with the USBCFG GP dedicated function.
-type USBCFG struct {
-	*MCP2221A
-}
-
-// INTCHG contains the methods associated with the IOC GP alternate function.
-type INTCHG struct {
-	*MCP2221A
-}
-
-// LEDI2C contains the methods associated with the LED_I2C GP dedicated
-// function.
-type LEDI2C struct {
-	*MCP2221A
-}
-
-// LEDURX contains the methods associated with the LED_URX GP alternate
-// function.
-type LEDURX struct {
-	*MCP2221A
-}
-
-// LEDUTX contains the methods associated with the LED_UTX GP alternate
-// function.
-type LEDUTX struct {
-	*MCP2221A
-}
 
 // Alt contains the various structures for enabling and configuring each of the
 // special-purpose GP dedicated and alternate operating modes.
@@ -1533,22 +1604,12 @@ const (
 	pinLEDUTX byte = 1 // LED_UTX - GP1 alternate function 1
 )
 
-// IntEdge represents the edge which triggers an interrupt.
-type IntEdge byte
+// -- SUSPND -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 
-// Constants associated with the interrupt detection module (INTCHG).
-const (
-	NoInterrupt       IntEdge = 0x00
-	RisingEdge        IntEdge = 0x01
-	FallingEdge       IntEdge = 0x02
-	RisingFallingEdge IntEdge = 0x03
-)
-
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- SUSPND
-//
-//
+// SUSPND contains the methods associated with the SSPND GP dedicated function.
+type SUSPND struct {
+	*MCP2221A
+}
 
 // FlashConfig configures the sole SSPND-capable GPIO pin's operation mode for
 // SSPND, sets the SSPND module's default polarity to the given pol, and writes
@@ -1571,8 +1632,8 @@ func (alt *SUSPND) FlashConfig(pol Polarity) error {
 		return fmt.Errorf("GPIO.FlashConfig(): %v", err)
 	}
 
-	if cmd, err := alt.Flash.chipSettings(true); nil != err {
-		return fmt.Errorf("Flash.chipSettings(): %v", err)
+	if cmd, err := alt.flash.chipSettings(true); nil != err {
+		return fmt.Errorf("flash.chipSettings(): %v", err)
 	} else {
 
 		cmd[2] &= ^byte(0x01 << 3) // mask off the SSPND bit (3)
@@ -1584,8 +1645,8 @@ func (alt *SUSPND) FlashConfig(pol Polarity) error {
 			cmd[2] |= byte(0x01 << 3)
 		}
 
-		if err := alt.Flash.write(subcmdChipSettings, cmd); nil != err {
-			return fmt.Errorf("Flash.write(): %v", err)
+		if err := alt.flash.write(subcmdChipSettings, cmd); nil != err {
+			return fmt.Errorf("flash.write(): %v", err)
 		}
 	}
 
@@ -1608,25 +1669,20 @@ func (alt *SUSPND) GetConfig() (Polarity, error) {
 		return false, err
 	}
 
-	if buf, err := alt.SRAM.readRange(4, 4); nil != err {
-		return false, fmt.Errorf("SRAM.readRange(): %v", err)
+	if buf, err := alt.sram.readRange(4, 4); nil != err {
+		return false, fmt.Errorf("sram.readRange(): %v", err)
 	} else {
 		pol := Polarity(0x00 == ((buf[0] >> 3) & 0x01))
 		return pol, nil
 	}
 }
 
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- SUSPND
-//
-//
+// -- CLKOUT -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- CLKOUT
-//
-//
+// CLKOUT contains the methods associated with the CLKR GP dedicated function.
+type CLKOUT struct {
+	*MCP2221A
+}
 
 // DutyCycle represents one of the enumerated constants that can be used as duty
 // cycle for the output clock generated on the GP alternate function CLKR pin.
@@ -1732,13 +1788,13 @@ func (alt *CLKOUT) FlashConfig(clk ClkOut, dut DutyCycle) error {
 		return fmt.Errorf("GPIO.FlashConfig(): %v", err)
 	}
 
-	if cmd, err := alt.Flash.chipSettings(true); nil != err {
-		return fmt.Errorf("Flash.chipSettings(): %v", err)
+	if cmd, err := alt.flash.chipSettings(true); nil != err {
+		return fmt.Errorf("flash.chipSettings(): %v", err)
 	} else {
 		cmd[3] = (byte(dut) << 3) | byte(clk)
 
-		if err := alt.Flash.write(subcmdChipSettings, cmd); nil != err {
-			return fmt.Errorf("Flash.write(): %v", err)
+		if err := alt.flash.write(subcmdChipSettings, cmd); nil != err {
+			return fmt.Errorf("flash.write(): %v", err)
 		}
 	}
 
@@ -1758,8 +1814,8 @@ func (alt *CLKOUT) GetConfig() (ClkOut, DutyCycle, error) {
 		return ClkRes, Duty0Pct, err
 	}
 
-	if buf, err := alt.SRAM.readRange(5, 5); nil != err {
-		return ClkRes, Duty0Pct, fmt.Errorf("SRAM.readRange(): %v", err)
+	if buf, err := alt.sram.readRange(5, 5); nil != err {
+		return ClkRes, Duty0Pct, fmt.Errorf("sram.readRange(): %v", err)
 	} else {
 		clk := ClkOut(buf[0] & 0x07)
 		dut := DutyCycle((buf[0] >> 3) & 0x03)
@@ -1767,17 +1823,12 @@ func (alt *CLKOUT) GetConfig() (ClkOut, DutyCycle, error) {
 	}
 }
 
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- CLKOUT
-//
-//
+// -- USBCFG -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- USBCFG
-//
-//
+// USBCFG contains the methods associated with the USBCFG GP dedicated function.
+type USBCFG struct {
+	*MCP2221A
+}
 
 // FlashConfig configures the sole USBCFG-capable GPIO pin's operation mode for
 // USBCFG, sets the USBCFG module's default polarity to the given pol, and
@@ -1800,8 +1851,8 @@ func (alt *USBCFG) FlashConfig(pol Polarity) error {
 		return fmt.Errorf("GPIO.FlashConfig(): %v", err)
 	}
 
-	if cmd, err := alt.Flash.chipSettings(true); nil != err {
-		return fmt.Errorf("Flash.chipSettings(): %v", err)
+	if cmd, err := alt.flash.chipSettings(true); nil != err {
+		return fmt.Errorf("flash.chipSettings(): %v", err)
 	} else {
 
 		cmd[2] &= ^byte(0x01 << 2) // mask off the USBCFG bit (2)
@@ -1813,8 +1864,8 @@ func (alt *USBCFG) FlashConfig(pol Polarity) error {
 			cmd[2] |= byte(0x01 << 2)
 		}
 
-		if err := alt.Flash.write(subcmdChipSettings, cmd); nil != err {
-			return fmt.Errorf("Flash.write(): %v", err)
+		if err := alt.flash.write(subcmdChipSettings, cmd); nil != err {
+			return fmt.Errorf("flash.write(): %v", err)
 		}
 	}
 
@@ -1838,25 +1889,31 @@ func (alt *USBCFG) GetConfig() (Polarity, error) {
 		return false, err
 	}
 
-	if buf, err := alt.SRAM.readRange(4, 4); nil != err {
-		return false, fmt.Errorf("SRAM.readRange(): %v", err)
+	if buf, err := alt.sram.readRange(4, 4); nil != err {
+		return false, fmt.Errorf("sram.readRange(): %v", err)
 	} else {
 		pol := Polarity(0x01 == ((buf[0] >> 2) & 0x01))
 		return pol, nil
 	}
 }
 
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- USBCFG
-//
-//
+// -- INTCHG -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- INTCHG
-//
-//
+// INTCHG contains the methods associated with the IOC GP alternate function.
+type INTCHG struct {
+	*MCP2221A
+}
+
+// IntEdge represents the edge which triggers an interrupt.
+type IntEdge byte
+
+// Constants associated with the interrupt detection module (INTCHG).
+const (
+	NoInterrupt       IntEdge = 0x00
+	RisingEdge        IntEdge = 0x01
+	FallingEdge       IntEdge = 0x02
+	RisingFallingEdge IntEdge = 0x03
+)
 
 // SetConfig configures the sole interrupt-capable GPIO pin's operation mode for
 // interrupt detection, sets the edge detection to the given edge, and clears
@@ -1942,14 +1999,14 @@ func (alt *INTCHG) FlashConfig(edge IntEdge) error {
 		return fmt.Errorf("GPIO.FlashConfig(): %v", err)
 	}
 
-	if cmd, err := alt.Flash.chipSettings(true); nil != err {
-		return fmt.Errorf("Flash.chipSettings(): %v", err)
+	if cmd, err := alt.flash.chipSettings(true); nil != err {
+		return fmt.Errorf("flash.chipSettings(): %v", err)
 	} else {
 		cmd[5] &= ^byte(0x03 << 5) // mask off the edge bits (5-6)
 		cmd[5] |= (byte(edge) << 5)
 
-		if err := alt.Flash.write(subcmdChipSettings, cmd); nil != err {
-			return fmt.Errorf("Flash.write(): %v", err)
+		if err := alt.flash.write(subcmdChipSettings, cmd); nil != err {
+			return fmt.Errorf("flash.write(): %v", err)
 		}
 	}
 
@@ -1967,25 +2024,21 @@ func (alt *INTCHG) GetConfig() (IntEdge, error) {
 		return NoInterrupt, err
 	}
 
-	if buf, err := alt.SRAM.readRange(7, 7); nil != err {
-		return NoInterrupt, fmt.Errorf("SRAM.readRange(): %v", err)
+	if buf, err := alt.sram.readRange(7, 7); nil != err {
+		return NoInterrupt, fmt.Errorf("sram.readRange(): %v", err)
 	} else {
 		edge := IntEdge((buf[0] >> 5) & 0x03)
 		return edge, nil
 	}
 }
 
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- INTCHG
-//
-//
+// -- LEDI2C -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- LEDI2C
-//
-//
+// LEDI2C contains the methods associated with the LED_I2C GP dedicated
+// function.
+type LEDI2C struct {
+	*MCP2221A
+}
 
 // FlashConfig configures the sole LED_I2C-capable GPIO pin's operation mode for
 // LED_I2C, sets the LEDI2C module's default polarity to the given pol, and then
@@ -2008,8 +2061,8 @@ func (alt *LEDI2C) FlashConfig(pol Polarity) error {
 		return fmt.Errorf("GPIO.FlashConfig(): %v", err)
 	}
 
-	if cmd, err := alt.Flash.chipSettings(true); nil != err {
-		return fmt.Errorf("Flash.chipSettings(): %v", err)
+	if cmd, err := alt.flash.chipSettings(true); nil != err {
+		return fmt.Errorf("flash.chipSettings(): %v", err)
 	} else {
 
 		cmd[2] &= ^byte(0x01 << 4) // mask off the LED_I2C bit (4)
@@ -2021,8 +2074,8 @@ func (alt *LEDI2C) FlashConfig(pol Polarity) error {
 			cmd[2] |= byte(0x01 << 4)
 		}
 
-		if err := alt.Flash.write(subcmdChipSettings, cmd); nil != err {
-			return fmt.Errorf("Flash.write(): %v", err)
+		if err := alt.flash.write(subcmdChipSettings, cmd); nil != err {
+			return fmt.Errorf("flash.write(): %v", err)
 		}
 	}
 
@@ -2046,25 +2099,21 @@ func (alt *LEDI2C) GetConfig() (Polarity, error) {
 		return false, err
 	}
 
-	if buf, err := alt.SRAM.readRange(4, 4); nil != err {
-		return false, fmt.Errorf("SRAM.readRange(): %v", err)
+	if buf, err := alt.sram.readRange(4, 4); nil != err {
+		return false, fmt.Errorf("sram.readRange(): %v", err)
 	} else {
 		pol := Polarity(0x00 == ((buf[0] >> 4) & 0x01))
 		return pol, nil
 	}
 }
 
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- LEDI2C
-//
-//
+// -- LEDURX -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- LEDURX
-//
-//
+// LEDURX contains the methods associated with the LED_URX GP alternate
+// function.
+type LEDURX struct {
+	*MCP2221A
+}
 
 // FlashConfig configures the sole LED_URX-capable GPIO pin's operation mode for
 // LED_URX, sets the LEDURX module's default polarity to the given pol, and then
@@ -2087,8 +2136,8 @@ func (alt *LEDURX) FlashConfig(pol Polarity) error {
 		return fmt.Errorf("GPIO.FlashConfig(): %v", err)
 	}
 
-	if cmd, err := alt.Flash.chipSettings(true); nil != err {
-		return fmt.Errorf("Flash.chipSettings(): %v", err)
+	if cmd, err := alt.flash.chipSettings(true); nil != err {
+		return fmt.Errorf("flash.chipSettings(): %v", err)
 	} else {
 
 		cmd[2] &= ^byte(0x01 << 6) // mask off the LED_URX bit (6)
@@ -2100,8 +2149,8 @@ func (alt *LEDURX) FlashConfig(pol Polarity) error {
 			cmd[2] |= byte(0x01 << 6)
 		}
 
-		if err := alt.Flash.write(subcmdChipSettings, cmd); nil != err {
-			return fmt.Errorf("Flash.write(): %v", err)
+		if err := alt.flash.write(subcmdChipSettings, cmd); nil != err {
+			return fmt.Errorf("flash.write(): %v", err)
 		}
 	}
 
@@ -2125,25 +2174,21 @@ func (alt *LEDURX) GetConfig() (Polarity, error) {
 		return false, err
 	}
 
-	if buf, err := alt.SRAM.readRange(4, 4); nil != err {
-		return false, fmt.Errorf("SRAM.readRange(): %v", err)
+	if buf, err := alt.sram.readRange(4, 4); nil != err {
+		return false, fmt.Errorf("sram.readRange(): %v", err)
 	} else {
 		pol := Polarity(0x00 == ((buf[0] >> 6) & 0x01))
 		return pol, nil
 	}
 }
 
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- LEDURX
-//
-//
+// -- LEDUTX -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- LEDUTX
-//
-//
+// LEDUTX contains the methods associated with the LED_UTX GP alternate
+// function.
+type LEDUTX struct {
+	*MCP2221A
+}
 
 // FlashConfig configures the sole LED_UTX-capable GPIO pin's operation mode for
 // LED_UTX, sets the LEDUTX module's default polarity to the given pol, and then
@@ -2166,8 +2211,8 @@ func (alt *LEDUTX) FlashConfig(pol Polarity) error {
 		return fmt.Errorf("GPIO.FlashConfig(): %v", err)
 	}
 
-	if cmd, err := alt.Flash.chipSettings(true); nil != err {
-		return fmt.Errorf("Flash.chipSettings(): %v", err)
+	if cmd, err := alt.flash.chipSettings(true); nil != err {
+		return fmt.Errorf("flash.chipSettings(): %v", err)
 	} else {
 
 		cmd[2] &= ^byte(0x01 << 5) // mask off the LED_UTX bit (5)
@@ -2179,8 +2224,8 @@ func (alt *LEDUTX) FlashConfig(pol Polarity) error {
 			cmd[2] |= byte(0x01 << 5)
 		}
 
-		if err := alt.Flash.write(subcmdChipSettings, cmd); nil != err {
-			return fmt.Errorf("Flash.write(): %v", err)
+		if err := alt.flash.write(subcmdChipSettings, cmd); nil != err {
+			return fmt.Errorf("flash.write(): %v", err)
 		}
 	}
 
@@ -2204,19 +2249,13 @@ func (alt *LEDUTX) GetConfig() (Polarity, error) {
 		return false, err
 	}
 
-	if buf, err := alt.SRAM.readRange(4, 4); nil != err {
-		return false, fmt.Errorf("SRAM.readRange(): %v", err)
+	if buf, err := alt.sram.readRange(4, 4); nil != err {
+		return false, fmt.Errorf("sram.readRange(): %v", err)
 	} else {
 		pol := Polarity(0x00 == ((buf[0] >> 5) & 0x01))
 		return pol, nil
 	}
 }
-
-//
-//
-// ----------------------------------------------------------------------------------------------------------------- LEDUTX
-//
-//
 
 // -- Alt ------------------------------------------------------------- [end] --
 // -----------------------------------------------------------------------------
