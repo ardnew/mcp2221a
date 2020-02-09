@@ -22,7 +22,7 @@ const (
 	VersionPkg = "mcp2221a"
 	VersionMaj = 0
 	VersionMin = 3
-	VersionPch = 0
+	VersionPch = 1
 )
 
 // Version returns the SemVer-compatible version string of this package.
@@ -38,10 +38,10 @@ func PackageVersion() string {
 // VID and PID are the official vendor and product identifiers assigned by the
 // USB-IF.
 const (
-	//VID = 0x04D8 // 16-bit vendor ID for Microchip Technology Inc.
-	//PID = 0x00DD // 16-bit product ID for the Microchip MCP2221A.
-	VID = 0x6f88 // custom-defined 16-bit vendor ID
-	PID = 0x04d8 // custom-defined 16-bit product ID
+	VID = 0x04D8 // 16-bit vendor ID for Microchip Technology Inc.
+	PID = 0x00DD // 16-bit product ID for the Microchip MCP2221A.
+	//VID = 0x6f88 // custom-defined 16-bit vendor ID
+	//PID = 0x04d8 // custom-defined 16-bit product ID
 )
 
 // MsgSz is the size (in bytes) of all command and response messages.
@@ -265,6 +265,10 @@ func New(idx byte, vid uint16, pid uint16) (*MCP2221A, error) {
 		LEDUTX: &LEDUTX{mcp},
 	}
 
+	// dismiss any pending I2C state machine status in case a prior session was
+	// not terminated gracefully.
+	_ = mcp.I2C.Cancel()
+
 	// initialize the device locked flag and flash write-access flag based on the
 	// chip security settings stored in flash memory.
 	if sec, err := mcp.flash.chipSecurity(); nil != err {
@@ -301,6 +305,9 @@ func (mcp *MCP2221A) Close() error {
 	if ok, err := mcp.valid(); !ok {
 		return err
 	}
+
+	// don't leave any I2C state machine status active
+	_ = mcp.I2C.Cancel()
 
 	mcp.locked, mcp.flash.writeable = true, false
 
