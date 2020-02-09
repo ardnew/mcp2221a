@@ -156,6 +156,7 @@ type MCP2221A struct {
 
 	// Locked indicates if the device is permanently locked, preventing
 	// write-access to the flash memory module.
+<<<<<<< HEAD
 	// It is not possible in any way to unlock the device if this is set. :(
 	locked bool
 
@@ -166,6 +167,10 @@ type MCP2221A struct {
 	// explicitly exported by the individual components may be used. simple.
 	sram  *sram  // volatile active settings, not restored on startup/reset
 	flash *flash // non-volatile inactive settings, restored on startup/reset
+=======
+	// It is not possible in any way to unlock the device if this is set.
+	locked bool
+>>>>>>> 5cba9e80972c66338ae05cfe80036620cd24db80
 
 	// each of the on-chip modules acting as primary functional interfaces.
 	GPIO *GPIO // 4x GPIO pins, each also have unique special functions
@@ -244,12 +249,21 @@ func New(idx byte, vid uint16, pid uint16) (*MCP2221A, error) {
 
 	// each module embeds the common *MCP2221A instance so that the modules can
 	// refer to each others' functions.
+<<<<<<< HEAD
 	mcp.sram, mcp.GPIO, mcp.ADC, mcp.DAC, mcp.I2C =
 		&sram{mcp}, &GPIO{mcp}, &ADC{mcp}, &DAC{mcp}, &I2C{mcp}
 
 	// configure the write-access flag as disabled by default until we've read the
 	// actual settings from flash memory.
 	mcp.flash = &flash{mcp, false}
+=======
+	mcp.SRAM, mcp.GPIO, mcp.ADC, mcp.DAC, mcp.I2C =
+		&SRAM{mcp}, &GPIO{mcp}, &ADC{mcp}, &DAC{mcp}, &I2C{mcp}
+
+	// configure the write-access flag as disabled by default until we've read the
+	// actual settings from flash memory.
+	mcp.Flash = &Flash{mcp, false}
+>>>>>>> 5cba9e80972c66338ae05cfe80036620cd24db80
 
 	// the Alt struct embeds the common *MCP2221A instance, but also has several
 	// other fields that need the same reference.
@@ -267,10 +281,17 @@ func New(idx byte, vid uint16, pid uint16) (*MCP2221A, error) {
 
 	// initialize the device locked flag and flash write-access flag based on the
 	// chip security settings stored in flash memory.
+<<<<<<< HEAD
 	if sec, err := mcp.flash.chipSecurity(); nil != err {
 		return nil, fmt.Errorf("flash.chipSecurity(): %v", err)
 	} else {
 		mcp.locked, mcp.flash.writeable = unlockFlags(sec)
+=======
+	if sec, err := mcp.Flash.chipSecurity(); nil != err {
+		return nil, fmt.Errorf("Flash.chipSecurity(): %v", err)
+	} else {
+		mcp.locked, mcp.Flash.writeable = unlockFlags(sec)
+>>>>>>> 5cba9e80972c66338ae05cfe80036620cd24db80
 	}
 
 	return mcp, nil
@@ -302,7 +323,11 @@ func (mcp *MCP2221A) Close() error {
 		return err
 	}
 
+<<<<<<< HEAD
 	mcp.locked, mcp.flash.writeable = true, false
+=======
+	mcp.locked, mcp.Flash.writeable = true, false
+>>>>>>> 5cba9e80972c66338ae05cfe80036620cd24db80
 
 	if err := mcp.Device.Close(); nil != err {
 		return err
@@ -395,10 +420,17 @@ func (mcp *MCP2221A) Reset(timeout time.Duration) error {
 
 	// initialize the device locked flag and flash write-access flag based on the
 	// chip security settings stored in flash memory.
+<<<<<<< HEAD
 	if sec, err := mcp.flash.chipSecurity(); nil != err {
 		return fmt.Errorf("flash.chipSecurity(): %v", err)
 	} else {
 		mcp.locked, mcp.flash.writeable = unlockFlags(sec)
+=======
+	if sec, err := mcp.Flash.chipSecurity(); nil != err {
+		return fmt.Errorf("Flash.chipSecurity(): %v", err)
+	} else {
+		mcp.locked, mcp.Flash.writeable = unlockFlags(sec)
+>>>>>>> 5cba9e80972c66338ae05cfe80036620cd24db80
 	}
 
 	return nil
@@ -492,6 +524,7 @@ func (mcp *MCP2221A) status() (*status, error) {
 	}
 }
 
+<<<<<<< HEAD
 // USBManufacturer reads the current USB manufacturer description from flash
 // memory and returns it as a string.
 //
@@ -644,6 +677,8 @@ func (mcp *MCP2221A) ConfigReqCurrent(ma uint16) error {
 	return nil
 }
 
+=======
+>>>>>>> 5cba9e80972c66338ae05cfe80036620cd24db80
 // unlockFlags returns the default device locked flag and flash writeable flag,
 // in that order, for the given ChipSecurity sec.
 func unlockFlags(sec ChipSecurity) (bool, bool) {
@@ -665,8 +700,13 @@ func unlockFlags(sec ChipSecurity) (bool, bool) {
 	return dev, fla
 }
 
+<<<<<<< HEAD
 // ConfigUnlock sends a flash access command with a given slice of bytes as
 // password, returning true if the password was accepted and access granted.
+=======
+// Unlock sends a flash access command with a given slice of bytes as password,
+// returning true if the password was accepted and access granted.
+>>>>>>> 5cba9e80972c66338ae05cfe80036620cd24db80
 // If more than 8 bytes are provided as password, the first 8 bytes are used and
 // the remaining bytes are truncated.
 // If the current chip security configuration is set to unsecured (no password),
@@ -682,7 +722,11 @@ func unlockFlags(sec ChipSecurity) (bool, bool) {
 // Returns false and an error if the receiver is invalid, the password slice is
 // nil, the password command could not be sent, the provided password was
 // incorrect, or if the flash has been permanently locked.
+<<<<<<< HEAD
 func (mcp *MCP2221A) ConfigUnlock(pass []byte) (bool, error) {
+=======
+func (mcp *MCP2221A) Unlock(pass []byte) (bool, error) {
+>>>>>>> 5cba9e80972c66338ae05cfe80036620cd24db80
 
 	if ok, err := mcp.valid(); !ok {
 		return false, err
@@ -719,7 +763,11 @@ func (mcp *MCP2221A) ConfigUnlock(pass []byte) (bool, error) {
 	switch ChipSecurity(rsp[1]) {
 
 	case SecUnsecured:
+<<<<<<< HEAD
 		mcp.flash.writeable = true
+=======
+		mcp.Flash.writeable = true
+>>>>>>> 5cba9e80972c66338ae05cfe80036620cd24db80
 		return true, nil
 
 	case SecPassword:
@@ -800,8 +848,13 @@ type flash struct {
 	// writeable helps prevent permanently locking the flash memory device on
 	// accident by acting as a gate that must be cleared before any flash write
 	// commands can be performed. Clearing the flag is performed by providing the
+<<<<<<< HEAD
 	// correct password to ConfigUnlock(). The flag is also automatically cleared
 	// when the device is created and the security settings read from flash memory
+=======
+	// correct password to Unlock(). The flag is also automatically cleared when
+	// the device is created and the security settings read from flash memory
+>>>>>>> 5cba9e80972c66338ae05cfe80036620cd24db80
 	// indicate no password is required. The flag is set again automatically when
 	// reset or closed (and cleared again after startup if no password is set).
 	writeable bool
@@ -1057,6 +1110,149 @@ func (mod *flash) gpioSettings() ([]byte, error) {
 	}
 }
 
+<<<<<<< HEAD
+=======
+// parseFlashString parses a UTF-16-encoded string stored in the response
+// messages of flash read commands (0xB0).
+func parseFlashString(b []byte) string {
+
+	// 16-bit unicode (2 bytes per rune), starting at byte 4
+	const max byte = (MsgSz - 4) / 2
+
+	n := (b[2] - 2) / 2 // length stored at byte 2
+
+	switch {
+	case n == 0: // no UTF symbols
+		return ""
+	case n > max: // buffer overrun
+		n = max
+	}
+
+	p := []uint16{}
+	for i := byte(0); i < n; i++ {
+		p = append(p, (uint16(b[4+2*i+1])<<8)|uint16(b[4+2*i]))
+	}
+
+	return string(utf16.Decode(p))
+}
+
+// USBManufacturer reads the current USB manufacturer description from flash
+// memory and returns it as a string.
+//
+// Returns an empty string and error if the receiver is invalid or if the flash
+// configuration could not be read.
+func (mod *Flash) USBManufacturer() (string, error) {
+
+	if ok, err := mod.valid(); !ok {
+		return "", err
+	}
+
+	if rsp, err := mod.read(subcmdUSBMfgDesc); nil != err {
+		return "", fmt.Errorf("read(): %v", err)
+	} else {
+		return parseFlashString(rsp), nil
+	}
+}
+
+// USBProduct reads the current USB product description from flash memory and
+// returns it as a string.
+//
+// Returns an empty string and error if the receiver is invalid or if the flash
+// configuration could not be read.
+func (mod *Flash) USBProduct() (string, error) {
+
+	if ok, err := mod.valid(); !ok {
+		return "", err
+	}
+
+	if rsp, err := mod.read(subcmdUSBProdDesc); nil != err {
+		return "", fmt.Errorf("read(): %v", err)
+	} else {
+		return parseFlashString(rsp), nil
+	}
+}
+
+// USBSerialNo reads the current USB serial number from flash memory and returns
+// it as a string.
+//
+// Returns an empty string and error if the receiver is invalid or if the flash
+// configuration could not be read.
+func (mod *Flash) USBSerialNo() (string, error) {
+
+	if ok, err := mod.valid(); !ok {
+		return "", err
+	}
+
+	if rsp, err := mod.read(subcmdUSBSerialNo); nil != err {
+		return "", fmt.Errorf("read(): %v", err)
+	} else {
+		return parseFlashString(rsp), nil
+	}
+}
+
+// FactorySerialNo reads the factory serial number (read-only) from flash memory
+// and returns it as a string.
+//
+// Returns an empty string and error if the receiver is invalid or if the flash
+// configuration could not be read.
+func (mod *Flash) FactorySerialNo() (string, error) {
+
+	if ok, err := mod.valid(); !ok {
+		return "", err
+	}
+
+	if rsp, err := mod.read(subcmdSerialNo); nil != err {
+		return "", fmt.Errorf("read(): %v", err)
+	} else {
+		cnt := rsp[2] - 2
+		if cnt > MsgSz-4 {
+			cnt = MsgSz - 4
+		}
+		return string(rsp[4 : 4+cnt]), nil
+	}
+}
+
+// ConfigVIDPID writes the given vendor ID and product ID to flash memory.
+// These settings are non-volatile and become the actual VID and PID with which
+// the device will enumerate itself on the USB host (i.e., if changed, the
+// global VID and PID constants defined in this package cannot be used to open
+// the device) on the next reset/startup.
+// Therefore, if changed, be sure your system settings are updated to permit
+// access to the device, since it will appear to be a new USB HID device.
+//
+// For instance, on some udev-based Linux systems, you may need to update your
+// udev rules to grant read-write access to your user for devices matching the
+// new VID/PID (these rules are traditionally kept in /etc/udev/rules.d).
+// If the udev rules are not updated, or your user does not otherwise have the
+// necessary permissions, New()/Reset() will fail on the eventual call to claim
+// the USB HID device (function (*DeviceInfo).Open() in package karalabe/hid).
+//
+// Returns an error if the receiver is invalid or if chip settings could not be
+// read from or written to flash memory.
+func (mod *Flash) ConfigVIDPID(vid uint16, pid uint16) error {
+
+	if ok, err := mod.valid(); !ok {
+		return err
+	}
+
+	if cmd, err := mod.chipSettings(true); nil != err {
+		return fmt.Errorf("chipSettings(): %v", err)
+	} else {
+
+		cmd[6] = byte(vid & 0xFF)
+		cmd[7] = byte((vid >> 8) & 0xFF)
+		cmd[8] = byte(pid & 0xFF)
+		cmd[9] = byte((pid >> 8) & 0xFF)
+
+		if err := mod.write(subcmdChipSettings, cmd); nil != err {
+			return fmt.Errorf("write(): %v", err)
+		}
+	}
+
+	return nil
+}
+
+>>>>>>> 5cba9e80972c66338ae05cfe80036620cd24db80
 // -- FLASH ----------------------------------------------------------- [end] --
 // -----------------------------------------------------------------------------
 
