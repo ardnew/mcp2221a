@@ -22,6 +22,8 @@ Go **[module](https://blog.golang.org/using-go-modules)** for the MCP2221A USB t
    - Password-protected flash support
    - Configure minimum required operating current (510 mA max)
 - [x] I²C read/write (configurable bit rate, up to 400 kHz)
+   - I²C address scanner discovers all slaves on the bus
+   - Convenience routines for reading registers from devices with 8-bit and 16-bit subaddressing
 
 Note that **UART support** is provided natively through the USB interface as a CDC device and is not handled by this module. It should show up in your OS as a regular TTY serial interface (`/dev/tty*` on Linux/macOS, COM on Windows).
 
