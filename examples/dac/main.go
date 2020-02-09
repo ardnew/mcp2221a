@@ -30,7 +30,7 @@ func main() {
 	}
 
 	// repeatedly write and print an incrementing 5-bit value every 100 ms
-	val := uint16(0)
+	val := byte(0)
 	for {
 		val = (val + 1) % 0x20 // 5-bit maximum
 		if err := m.DAC.Write(val); nil != err {

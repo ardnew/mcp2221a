@@ -23,23 +23,23 @@ func main() {
 	}
 
 	// print the description strings stored in flash memory
-	if s, err := m.Flash.USBManufacturer(); nil != err {
-		log.Fatalf("Flash.USBManufacturer(): %s", err)
+	if s, err := m.USBManufacturer(); nil != err {
+		log.Fatalf("USBManufacturer(): %s", err)
 	} else {
 		log.Printf("USB Manufacturer  = \"%s\"", s)
 	}
-	if s, err := m.Flash.USBProduct(); nil != err {
-		log.Fatalf("Flash.USBProduct(): %s", err)
+	if s, err := m.USBProduct(); nil != err {
+		log.Fatalf("USBProduct(): %s", err)
 	} else {
 		log.Printf("USB Product       = \"%s\"", s)
 	}
-	if s, err := m.Flash.USBSerialNo(); nil != err {
-		log.Fatalf("Flash.USBSerialNo(): %s", err)
+	if s, err := m.USBSerialNo(); nil != err {
+		log.Fatalf("USBSerialNo(): %s", err)
 	} else {
 		log.Printf("USB Serial No     = \"%s\"", s)
 	}
-	if s, err := m.Flash.FactorySerialNo(); nil != err {
-		log.Fatalf("Flash.FactorySerialNo(): %s", err)
+	if s, err := m.FactorySerialNo(); nil != err {
+		log.Fatalf("FactorySerialNo(): %s", err)
 	} else {
 		log.Printf("Factory Serial No = \"%s\"", s)
 	}
