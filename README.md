@@ -82,17 +82,14 @@ All of the available operating modes for the general-purpose (GP) pins:
 
 ###### Supported modes
 However, only certain pins support each of the operating modes listed above — per the following matrix yanked from the datasheet:
-<pre>
-                  ╔══════════════╤══════════════╤══════════════╤══════════════╗
-                  ║<b>     GP0      </b>│<b>     GP1      </b>│<b>     GP2      </b>│<b>     GP3      </b>║
-    ╔═════════════╬══════════════╪══════════════╪══════════════╪══════════════╣
-    ║<b>       GPIO  </b>║     GPIO     │     GPIO     │     GPIO     │     GPIO     ║
-    ║<b>  Dedicated  </b>║     SSPND    │     CLKR     │    USBCFG    │    LED_I2C   ║
-    ║<b>      Alt 1  </b>║    LED_URX   │     ADC1     │     ADC2     │     ADC3     ║
-    ║<b>      Alt 2  </b>║      --      │    LED_UTX   │     DAC1     │     DAC2     ║
-    ║<b>      Alt 3  </b>║      --      │     IOC      │      --      │      --      ║
-    ╚═════════════╩══════════════╧══════════════╧══════════════╧══════════════╝
-</pre>
+
+|         |**GP0**|**GP1**|**GP2**|**GP3**|
+|--------:|:-----:|:-----:|:-----:|:-----:|
+|  Default| GPIO  | GPIO  | GPIO  | GPIO  |
+|Dedicated| SSPND | CLKR  |USBCFG |LED_I2C|
+|    Alt 1|LED_URX| ADC1  | ADC2  | ADC3  |
+|    Alt 2|  --   |LED_UTX| DAC1  | DAC2  |
+|    Alt 3|  --   |  IOC  |  --   |  --   |
 
 #### Datasheet
 Please refer to this before sending me a confusing question:
