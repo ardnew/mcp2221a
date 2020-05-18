@@ -83,13 +83,15 @@ All of the available operating modes for the general-purpose (GP) pins:
 ###### Supported modes
 However, only certain pins support each of the operating modes listed above — per the following matrix yanked from the datasheet:
 
-|         |**GP0**|**GP1**|**GP2**|**GP3**|
-|--------:|:-----:|:-----:|:-----:|:-----:|
-|  Default| GPIO  | GPIO  | GPIO  | GPIO  |
-|Dedicated| SSPND | CLKR  |USBCFG |LED_I2C|
-|    Alt 1|LED_URX| ADC1  | ADC2  | ADC3  |
-|    Alt 2|  --   |LED_UTX| DAC1  | DAC2  |
-|    Alt 3|  --   |  IOC  |  --   |  --   |
+|             |**GP0**|**GP1**|**GP2**|**GP3**|
+|------------:|:-----:|:-----:|:-----:|:-----:|
+|  **Default**| GPIO  | GPIO  | GPIO  | GPIO  |
+|**Dedicated**| SSPND | CLKR  |USBCFG |LED_I2C|
+|    **Alt 1**|LED_URX| ADC1  | ADC2  | ADC3  |
+|    **Alt 2**|  --   |LED_UTX| DAC1  | DAC2  |
+|    **Alt 3**|  --   |  IOC  |  --   |  --   |
+
+No idea why the first row of alternate functions is named **Dedicated**, that's how they are identified in the datasheet...
 
 #### Datasheet
 Please refer to this before sending me a confusing question:
